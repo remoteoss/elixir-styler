@@ -96,45 +96,6 @@ The examples below use `DateTime.compare/2`, but the same is also done for `Naiv
 | `DateTime.compare(start, end_date) == :gt` | `DateTime.after?(start, end_date)` |
 | `DateTime.compare(start, end_date) == :lt` | `DateTime.before?(start, end_date)` |
 
-## Implicit Try
-
-Styler will rewrite functions whose entire body is a try/do to instead use the implicit try syntax, per Credo's `Credo.Check.Readability.PreferImplicitTry`
-
-The following example illustrates the most complex case, but Styler happily handles just basic try do/rescue bodies just as easily.
-
-### Before
-
-```elixir
-def foo() do
-  try do
-    uh_oh()
-  rescue
-    exception -> {:error, exception}
-  catch
-    :a_throw -> {:error, :threw!}
-  else
-    try_has_an_else_clause? -> {:did_you_know, try_has_an_else_clause?}
-  after
-    :done
-  end
-end
-```
-
-### After
-
-```elixir
-def foo() do
-  uh_oh()
-rescue
-  exception -> {:error, exception}
-catch
-  :a_throw -> {:error, :threw!}
-else
-  try_has_an_else_clause? -> {:did_you_know, try_has_an_else_clause?}
-after
-  :done
-end
-```
 
 ## Remove parenthesis from 0-arity function & macro definitions
 
