@@ -182,10 +182,6 @@ defmodule Styler.Style.Blocks do
       [negator, [do_block]] when is_negator(negator) ->
         zipper |> Zipper.replace({:unless, m, [invert(negator), [do_block]]}) |> run(ctx)
 
-      # drop `else: nil`
-      [head, [do_block, {_, {:__block__, _, [nil]}}]] ->
-        {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
-
       [head, [do_, else_]] ->
         if Style.max_line(do_) > Style.max_line(else_) do
           # we inverted the if/else blocks of this `if` statement in a previous pass (due to negators or unless)

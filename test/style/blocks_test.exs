@@ -66,9 +66,10 @@ defmodule Styler.Style.BlocksTest do
         if foo do
           # a
           :ok
+        else
+          # b
+          nil
         end
-
-        # b
         """
       )
 
@@ -82,6 +83,8 @@ defmodule Styler.Style.BlocksTest do
         """
         if foo do
           :ok
+        else
+          nil
         end
         """
       )
@@ -770,16 +773,6 @@ defmodule Styler.Style.BlocksTest do
   end
 
   describe "if/unless" do
-    test "drops if else nil" do
-      assert_style("if a, do: b, else: nil", "if a, do: b")
-
-      assert_style("if a do b else nil end", """
-      if a do
-        b
-      end
-      """)
-    end
-
     test "if not => unless" do
       assert_style("if not x, do: y", "unless x, do: y")
       assert_style("if !x, do: y", "unless x, do: y")
