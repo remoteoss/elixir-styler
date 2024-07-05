@@ -11,237 +11,6 @@
 defmodule Styler.Style.BlocksTest do
   use Styler.StyleCase, async: true
 
-  describe "case to if" do
-    test "rewrites case true false to if else" do
-      assert_style(
-        """
-        case foo do
-          # a
-          true -> :ok
-          # b
-          false -> :error
-        end
-        """,
-        """
-        if foo do
-          # a
-          :ok
-        else
-          # b
-          :error
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          # a
-          true -> :ok
-          # b
-          _ -> :error
-        end
-        """,
-        """
-        if foo do
-          # a
-          :ok
-        else
-          # b
-          :error
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          # a
-          true -> :ok
-          # b
-          false -> nil
-        end
-        """,
-        """
-        if foo do
-          # a
-          :ok
-        else
-          # b
-          nil
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          true -> :ok
-          _ -> nil
-        end
-        """,
-        """
-        if foo do
-          :ok
-        else
-          nil
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          true -> :ok
-          false ->
-            Logger.warning("it's false")
-            nil
-        end
-        """,
-        """
-        if foo do
-          :ok
-        else
-          Logger.warning("it's false")
-          nil
-        end
-        """
-      )
-    end
-
-    test "block swapping comments" do
-      assert_style(
-        """
-        case foo do
-          false ->
-            # a
-            :error
-          true ->
-            # b
-            :ok
-        end
-        """,
-        """
-        if foo do
-          # b
-          :ok
-        else
-          # a
-          :error
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          # a
-          false ->
-            :error
-          # b
-          true ->
-            :ok
-        end
-        """,
-        """
-        if foo do
-          # b
-          :ok
-        else
-          # a
-          :error
-        end
-        """
-      )
-
-      assert_style(
-        """
-        case foo do
-          # a
-          false -> :error
-          # b
-          true -> :ok
-        end
-        """,
-        """
-        if foo do
-          # b
-          :ok
-        else
-          # a
-          :error
-        end
-        """
-      )
-    end
-
-    test "complex comments" do
-      assert_style(
-        """
-        case foo do
-          false ->
-            #a
-            actual(code)
-
-            #b
-            if foo do
-              #c
-              doing_stuff()
-              #d
-            end
-
-            #e
-            :ok
-          true ->
-            #f
-            Logger.warning("it's false")
-
-            if 1 do
-              # g
-              :yay
-            else
-              # h
-              :ohno
-            end
-
-            # i
-            nil
-        end
-        """,
-        """
-        if foo do
-          # f
-          Logger.warning("it's false")
-
-          if 1 do
-            # g
-            :yay
-          else
-            # h
-            :ohno
-          end
-
-          # i
-          nil
-        else
-          # a
-          actual(code)
-
-          # b
-          if foo do
-            # c
-            doing_stuff()
-            # d
-          end
-
-          # e
-          :ok
-        end
-        """
-      )
-    end
-  end
-
   describe "with statements" do
     test "replacement due to no (or all removed) arrows" do
       assert_style(
@@ -480,7 +249,7 @@ defmodule Styler.Style.BlocksTest do
       )
     end
 
-    test "transforms a `with` all the way to an `if` if necessary" do
+    test "transforms an unnecessary `with` to `case`" do
       # with a preroll
       assert_style(
         """
@@ -494,10 +263,9 @@ defmodule Styler.Style.BlocksTest do
         """
         foo = bar
 
-        if bop do
-          :ok
-        else
-          :error
+        case bop do
+          true -> :ok
+          _ -> :error
         end
         """
       )
@@ -512,10 +280,9 @@ defmodule Styler.Style.BlocksTest do
         end
         """,
         """
-        if bop do
-          :ok
-        else
-          :error
+        case bop do
+          true -> :ok
+          _ -> :error
         end
         """
       )
@@ -530,11 +297,13 @@ defmodule Styler.Style.BlocksTest do
         end
         """,
         """
-        if bop do
-          foo = bar
-          :ok
-        else
-          :error
+        case bop do
+          true ->
+            foo = bar
+            :ok
+
+          _ ->
+            :error
         end
         """
       )

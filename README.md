@@ -79,38 +79,6 @@ Styler [will not add configuration](https://github.com/adobe/elixir-styler/pull/
 
 Ultimately Styler is @adobe's internal tool that we're happy to share with the world. We're delighted if you like it as is, and just as excited if it's a starting point for you to make something even better for yourself.
 
-## !Styler can change the behaviour of your program!
-
-The best example of the way in which Styler changes the meaning of your code is the following rewrite:
-```elixir
-# Before: this case statement...
-case foo do
-  true -> :ok
-  false -> :error
-end
-
-# After: ... is rewritten by Styler to be an if statement!.
-if foo do
-  :ok
-else
-  :error
-end
-```
-
-These programs are not semantically equivalent. The former would raise if `foo` returned any value other than `true` or `false`, while the latter blissfully completes.
-
-However, Styler is about _style_, and the `if` statement is (in our opinion) of much better style. If the exception behaviour was intentional on the code author's part, they should have written the program like this:
-
-```elixir
-case foo do
-  true -> :ok
-  false -> :error
-  other -> raise "expected `true` or `false`, got: #{inspect other}"
-end
-```
-
-Also good style! But Styler assumes that most of the time people just meant the `if` equivalent of the code, and so makes that change. If issues like this bother you, Styler probably isn't the tool you're looking for.
-
 ## Thanks & Inspiration
 
 ### [Sourceror](https://github.com/doorgan/sourceror/)

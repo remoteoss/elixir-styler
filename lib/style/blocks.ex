@@ -17,9 +17,7 @@ defmodule Styler.Style.Blocks do
   * Credo.Check.Consistency.ParameterPatternMatching
   * Credo.Check.Readability.LargeNumbers
   * Credo.Check.Readability.ParenthesesOnZeroArityDefs
-  * Credo.Check.Readability.PreferImplicitTry
   * Credo.Check.Readability.WithSingleClause
-  * Credo.Check.Refactor.CaseTrivialMatches
   * Credo.Check.Refactor.CondStatements
   * Credo.Check.Refactor.RedundantWithClauseResult
   * Credo.Check.Refactor.WithClauses
@@ -34,14 +32,14 @@ defmodule Styler.Style.Blocks do
 
   # case statement with exactly 2 `->` cases
   # rewrite to `if` if it's any of 3 trivial cases
-  def run({{:case, _, [head, [{_, [{:->, _, [[lhs_a], a]}, {:->, _, [[lhs_b], b]}]}]]}, _} = zipper, ctx) do
-    case {lhs_a, lhs_b} do
-      {{_, _, [true]}, {_, _, [false]}} -> if_ast(zipper, head, a, b, ctx)
-      {{_, _, [true]}, {:_, _, _}} -> if_ast(zipper, head, a, b, ctx)
-      {{_, _, [false]}, {_, _, [true]}} -> if_ast(zipper, head, b, a, ctx)
-      _ -> {:cont, zipper, ctx}
-    end
-  end
+  # def run({{:case, _, [head, [{_, [{:->, _, [[lhs_a], a]}, {:->, _, [[lhs_b], b]}]}]]}, _} = zipper, ctx) do
+  #   case {lhs_a, lhs_b} do
+  #     {{_, _, [true]}, {_, _, [false]}} -> if_ast(zipper, head, a, b, ctx)
+  #     {{_, _, [true]}, {:_, _, _}} -> if_ast(zipper, head, a, b, ctx)
+  #     {{_, _, [false]}, {_, _, [true]}} -> if_ast(zipper, head, b, a, ctx)
+  #     _ -> {:cont, zipper, ctx}
+  #   end
+  # end
 
   # Credo.Check.Refactor.CondStatements
   def run({{:cond, _, [[{_, [{:->, _, [[head], a]}, {:->, _, [[{:__block__, _, [truthy]}], b]}]}]]}, _} = zipper, ctx)
