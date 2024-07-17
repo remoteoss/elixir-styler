@@ -3,6 +3,20 @@
 **Note** Styler's only public API is its usage as a formatter plugin. While you're welcome to play with its internals,
 they can and will change without that change being reflected in Styler's semantic version.
 
+## main
+
+### Improvements
+
+#### `with`
+
+* remove `with` structure with no left arrows in its head to be normal code (#174)
+* `with true <- x(), do: y` => `if x(), do: y` (#173)
+
+### Fixes
+
+* fix `with` arrow replacement + redundant body removal creating invalid statements (#184, h/t @JesseHerrick)
+* allow Kernel unary `!` and `not` as valid pipe starts (#183, h/t @nherzing)
+
 ## 1.0.0-rc.2
 
 ### Fixes
