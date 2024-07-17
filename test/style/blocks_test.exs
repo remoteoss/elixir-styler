@@ -129,6 +129,33 @@ defmodule Styler.Style.BlocksTest do
         )
         """
       )
+
+      assert_style(
+        """
+        with a <- b(c), {:ok, result} <- x(y, z), do: {:ok, result}
+        """,
+        """
+        a = b(c)
+        x(y, z)
+        """
+      )
+
+      assert_style(
+        """
+        with x = y, a = b do
+          w
+          z
+        else
+         _ -> whatever
+        end
+        """,
+        """
+        x = y
+        a = b
+        w
+        z
+        """
+      )
     end
 
     test "doesn't false positive with vars" do
@@ -175,7 +202,7 @@ defmodule Styler.Style.BlocksTest do
         """
       )
 
-      for nontrivial_head <- ["foo", ":ok = foo", ":ok <- foo, :ok <- bar"] do
+      for nontrivial_head <- ["foo", ":ok <- foo, :ok <- bar"] do
         assert_style("""
         with #{nontrivial_head} do
           :success
@@ -185,13 +212,7 @@ defmodule Styler.Style.BlocksTest do
         """)
       end
 
-      assert_style(
-        """
-        with :ok <- foo(),
-          do: :ok
-        """,
-        "foo()"
-      )
+      assert_style("with :ok <- foo(), do: :ok", "foo()")
     end
 
     test "rewrites non-pattern-matching lhs" do
@@ -304,6 +325,38 @@ defmodule Styler.Style.BlocksTest do
 
           _ ->
             :error
+        end
+        """
+      )
+
+      assert_style(
+        """
+        with true <- foo do
+          boop
+          bar
+        end
+        """,
+        """
+        if foo do
+          boop
+          bar
+        end
+        """
+      )
+
+      assert_style "with true <- x, do: bar", "if x, do: bar"
+
+      assert_style(
+        """
+        with true <- foo || {:error, :shouldve_used_an_if_statement} do
+          bar
+        end
+        """,
+        """
+        if foo do
+          bar
+        else
+          {:error, :shouldve_used_an_if_statement}
         end
         """
       )

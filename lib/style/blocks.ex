@@ -57,10 +57,29 @@ defmodule Styler.Style.Blocks do
     run({{:case, m, [single_statement, clauses]}, zm}, ctx)
   end
 
+  # `with true <- x, do: bar` =>`if x, do: bar`
+  def run({{:with, m, [{:<-, _, [{_, _, [true]}, rhs]}, [do_kwl]]}, _} = zipper, ctx) do
+    children =
+      case rhs do
+        # `true <- foo || {:error, :shouldve_used_an_if_statement}``
+        # turn the rhs of an `||` into an else body
+        {:||, _, [head, else_body]} ->
+          [head, [do_kwl, {{:__block__, [line: m[:line] + 2], [:else]}, Style.shift_line(else_body, 3)}]]
+
+        _ ->
+          [rhs, [do_kwl]]
+      end
+
+    {:cont, Zipper.replace(zipper, {:if, m, children}), ctx}
+  end
+
   # Credo.Check.Refactor.WithClauses
   def run({{:with, with_meta, children}, _} = zipper, ctx) when is_list(children) do
     # a std lib `with` block will have at least one left arrow and a `do` body. anything else we skip ¯\_(ツ)_/¯
-    if Enum.any?(children, &left_arrow?/1) and Enum.any?(children, &match?([{{:__block__, _, [:do]}, _body} | _], &1)) do
+    arrow_or_match? = &(left_arrow?(&1) || match?({:=, _, _}, &1))
+    do_block? = &match?([{{:__block__, _, [:do]}, _body} | _], &1)
+
+    if Enum.any?(children, arrow_or_match?) and Enum.any?(children, do_block?) do
       {preroll, children} =
         children
         |> Enum.map(fn
@@ -126,8 +145,12 @@ defmodule Styler.Style.Blocks do
         with_children = Enum.reverse(reversed_clauses, [[{do_block, do_body} | elses]])
         zipper = Zipper.replace(zipper, {:with, with_meta, with_children})
 
-        # recurse if the # of `<-` have changed (this `with` could now be eligible for a `case` rewrite)
         cond do
+          # oops! RedundantWithClauseResult removed the final arrow in this. no more need for a with statement!
+          Enum.empty?(reversed_clauses) ->
+            {:cont, replace_with_statement(zipper, preroll ++ with_children), ctx}
+
+          # recurse if the # of `<-` have changed (this `with` could now be eligible for a `case` rewrite)
           Enum.any?(preroll) ->
             # put the preroll before the with statement in either a block we create or the existing parent block
             zipper
@@ -135,13 +158,9 @@ defmodule Styler.Style.Blocks do
             |> Zipper.prepend_siblings(preroll)
             |> run(ctx)
 
+          # the # of `<-` canged, so we should have another look at this with statement
           Enum.any?(postroll) ->
-            # both of these changed the # of `<-`, so we should have another look at this with statement
             run(zipper, ctx)
-
-          Enum.empty?(reversed_clauses) ->
-            # oops! RedundantWithClauseResult removed the final arrow in this. no more need for a with statement!
-            {:cont, replace_with_statement(zipper, with_children), ctx}
 
           true ->
             # of clauess didn't change, so don't reecurse or we'll loop FOREEEVEERR
@@ -198,22 +217,24 @@ defmodule Styler.Style.Blocks do
   defp replace_with_statement(zipper, preroll) do
     [[{_do, do_body} | _elses] | preroll] = Enum.reverse(preroll)
 
-    # RedundantWithClauseResult except we rewrote the `<-` to an `=`
-    # with a, b, x <- y(), do: x
-    # =>
-    # a; b; y
     block =
-      case preroll do
-        [{:=, _, [lhs, rhs]} | rest] ->
-          if nodes_equivalent?(lhs, do_body),
-            do: [rhs | rest],
-            else: [do_body | preroll]
+      case do_body do
+        {:__block__, _, [{_, _, _} | _] = children} ->
+          Enum.reverse(preroll, children)
 
         _ ->
-          [do_body | preroll]
-      end
+          # RedundantWithClauseResult except we rewrote the `<-` to an `=`
+          # `with a, b, x <- y(), do: x` => `a; b; y`
+          case preroll do
+            [{:=, _, [lhs, rhs]} | rest] ->
+              if nodes_equivalent?(lhs, do_body),
+                do: Enum.reverse(rest, [rhs]),
+                else: Enum.reverse(preroll, [do_body])
 
-    block = Enum.reverse(block)
+            _ ->
+              Enum.reverse(preroll, [do_body])
+          end
+      end
 
     case Style.ensure_block_parent(zipper) do
       {:ok, zipper} ->
