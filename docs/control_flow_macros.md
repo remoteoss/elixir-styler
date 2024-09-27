@@ -11,20 +11,21 @@ The number of "blocks" in Elixir means there are many ways to write semantically
 
 We believe readability is enhanced by using the simplest api possible, whether we're talking about internal module function calls or standard-library macros.
 
-### use `case`, `if`, or `unless` when...
+### use `case`, `if`, or `cond` when...
 
 We advocate for `case` and `if` as the first tools to be considered for any control flow as they are the two simplest blocks. If a branch _can_ be expressed with an `if` statement, it _should_ be. Otherwise, `case` is the next best choice. In situations where developers might reach for an `if/elseif/else` block in other languages, `cond do` should be used.
 
 (`cond do` seems to see a paucity of use in the language, but many complex nested expressions or with statements can be improved by replacing them with a `cond do`).
 
-`unless` is a special case of `if` meant to make code read as natural-language (citation needed). While it sometimes succeeds in this goal, its absence in most programming languages often makes it feel cumbersome to programmers with non-Ruby backgrounds. Thankfully, with Styler's help developers don't need to ever reach for `unless` - expressions that are "simpler" with its use are automatically rewritten to use it.
+### use `unless` when...
+
+Never! `unless` [is being deprecated](https://github.com/elixir-lang/elixir/pull/13769#issuecomment-2334878315) and so should not be used.
 
 ### use `with` when...
 
 > `with` great power comes great responsibility
 >
 > - Uncle Ben
-
 
 As the most powerful of the Kernel control-flow expressions, `with` requires the most cognitive overhead to understand. Its power means that we can use it as a replacement for anything we might express using a `case`, `if`, or `cond` (especially with the liberal application of small private helper functions).
 
@@ -97,26 +98,29 @@ if x, do: y
 
 ### "Erlang heritage" `case` true/false -> `if`
 
-Trivial true/false `case` statements are rewritten to `if` statements. While this results in a [semantically different program](https://github.com/rrrene/credo/issues/564#issue-338349517), we argue that it results in a better program for maintainability. If the developer wants a their case statement to raise when receiving a non-boolean value as a feature of the program, they would better serve their callers by raising something more descriptive.
+Trivial true/false `case` statements are rewritten to `if` statements. While this results in a [semantically different program](https://github.com/rrrene/credo/issues/564#issue-338349517), we argue that it results in a better program for maintainability. If the developer wants their case statement to raise when receiving a non-boolean value as a feature of the program, they would better serve their callers by raising something more descriptive.
 
 In other words, Styler leaves the code with better style, trumping obscure exception design :)
 
 ```elixir
-# instead of this
+# Styler will rewrite this even if the clause order is flipped,
+# and if the `false` is replaced with a wildcard (`_`)
 case foo do
   true -> :ok
   false -> :error
 end
 
-# do this
+# styled:
 if foo do
   :ok
 else
   :error
 end
+```
 
-# OR this. readers now know that the exception is an intentional design,
-# rather than an accidental "feature"
+Per the argument above, if the `if` statement is an incorrect rewrite for your program, we recommend this manual fix rewrite:
+
+```elixir
 case foo do
   true -> :ok
   false -> :error
@@ -265,8 +269,6 @@ If the pattern of the final clause of the head is also the `with` statements `do
 with {:ok, a} <- foo(),
      {:ok, b} <- bar(a) do
   {:ok, b}
-else
-  error -> error
 end
 # Styled:
 with {:ok, a} <- foo() do
@@ -276,7 +278,7 @@ end
 
 ### Replace with `case`
 
-A `with` statement with a single clause in the head and `else` is a really just a `case` clause putting on airs.
+A `with` statement with a single clause in the head and an `else` body is really just a `case` statement putting on airs.
 
 ```elixir
 # Given:

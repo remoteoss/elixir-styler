@@ -23,10 +23,10 @@ defmodule Styler.Style.Blocks do
   * Credo.Check.Refactor.WithClauses
   """
 
-  @behaviour Styler.Style
-
   alias Styler.Style
   alias Styler.Zipper
+
+  @behaviour Styler.Style
 
   defguardp is_negator(n) when elem(n, 0) in [:!, :not, :!=, :!==]
 
@@ -174,26 +174,27 @@ defmodule Styler.Style.Blocks do
     end
   end
 
-  def run({{:unless, m, children}, _} = zipper, ctx) do
-    case children do
-      # Credo.Check.Refactor.UnlessWithElse
-      [{_, hm, _} = head, [_, _] = do_else] ->
-        zipper |> Zipper.replace({:if, m, [{:!, hm, [head]}, do_else]}) |> run(ctx)
-
-      # Credo.Check.Refactor.NegatedConditionsInUnless
-      [negator, [{do_, do_body}]] when is_negator(negator) ->
-        zipper |> Zipper.replace({:if, m, [invert(negator), [{do_, do_body}]]}) |> run(ctx)
-
-      _ ->
-        {:cont, zipper, ctx}
-    end
+  def run({{:unless, m, [head, do_else]}, _} = zipper, ctx) do
+    zipper
+    |> Zipper.replace({:if, m, [invert(head), do_else]})
+    |> run(ctx)
   end
 
   def run({{:if, m, children}, _} = zipper, ctx) do
     case children do
+      # double negator
+      # if !!x, do: y[, else: ...] => if x, do: y[, else: ...]
+      [{_, _, [nb]} = na, do_else] when is_negator(na) and is_negator(nb) ->
+        zipper |> Zipper.replace({:if, m, [invert(nb), do_else]}) |> run(ctx)
+
       # Credo.Check.Refactor.NegatedConditionsWithElse
+      # if !x, do: y, else: z => if x, do: z, else: y
       [negator, [{do_, do_body}, {else_, else_body}]] when is_negator(negator) ->
         zipper |> Zipper.replace({:if, m, [invert(negator), [{do_, else_body}, {else_, do_body}]]}) |> run(ctx)
+
+      # drop `else end`
+      [head, [do_block, {_, {:__block__, _, []}}]] ->
+        {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
 
       [head, [do_, else_]] ->
         if Style.max_line(do_) > Style.max_line(else_) do
@@ -254,7 +255,7 @@ defmodule Styler.Style.Blocks do
         #     c
         #     d
         #   )
-        # @TODO would be nice to changeto
+        # @TODO would be nice to change to
         # a
         # b
         # c
@@ -317,5 +318,10 @@ defmodule Styler.Style.Blocks do
 
   defp invert({:!=, m, [a, b]}), do: {:==, m, [a, b]}
   defp invert({:!==, m, [a, b]}), do: {:===, m, [a, b]}
-  defp invert({_, _, [expr]}), do: expr
+  defp invert({:==, m, [a, b]}), do: {:!=, m, [a, b]}
+  defp invert({:===, m, [a, b]}), do: {:!==, m, [a, b]}
+  defp invert({:!, _, [condition]}), do: condition
+  defp invert({:not, _, [condition]}), do: condition
+  defp invert({:in, m, [_, _]} = ast), do: {:not, m, [ast]}
+  defp invert({_, m, _} = ast), do: {:!, [line: m[:line]], [ast]}
 end

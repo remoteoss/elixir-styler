@@ -41,11 +41,11 @@ defmodule Styler.Style.ModuleDirectives do
     * everything else (unchanged)
   """
 
-  @behaviour Styler.Style
-
   alias Styler.AliasEnv
   alias Styler.Style
   alias Styler.Zipper
+
+  @behaviour Styler.Style
 
   @directives ~w(alias import require use)a
   @attr_directives ~w(moduledoc shortdoc behaviour)a
