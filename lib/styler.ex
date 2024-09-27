@@ -13,11 +13,11 @@ defmodule Styler do
   Styler is a formatter plugin with stronger opinions on code organization, multi-line defs and other code-style matters.
   """
 
-  @behaviour Mix.Tasks.Format
-
   alias Mix.Tasks.Format
   alias Styler.StyleError
   alias Styler.Zipper
+
+  @behaviour Mix.Tasks.Format
 
   @styles [
     Styler.Style.ModuleDirectives,

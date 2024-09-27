@@ -13,26 +13,26 @@ You can learn more about the history, purpose and implementation of Styler from 
 
 - auto-fixes [many credo rules](docs/credo.md), meaning you can turn them off to speed credo up
 - [keeps a strict module layout](docs/module_directives.md#directive-organization)
-- alphabetizes module directives
+  - alphabetizes module directives
 - [extracts repeated aliases](docs/module_directives.md#alias-lifting)
-- pipes and unpipes function calls based on the number of calls
-- optimizes standard library calls (`a |> Enum.map(m) |> Enum.into(Map.new)` => `Map.new(a, m)`)
+- [makes your pipe chains pretty as can be](docs/pipes.md)
+  - pipes and unpipes function calls based on the number of calls
+  - optimizes standard library calls (`a |> Enum.map(m) |> Enum.into(Map.new)` => `Map.new(a, m)`)
 - replaces strings with sigils when the string has many escaped quotes
 - ... and so much more
 
-[See our Rewrites documentation on hexdocs for all the nitty-gritty on what all Styler does](https://hexdocs.pm/styler/)
+[See our Rewrites documentation on hexdocs](https://hexdocs.pm/styler/styles.html)
 
 ## Who is Styler for?
 
-Styler was designed for a large team (40+ engineers) working in a single codebase. It helps remove fiddly code review comments and removes failed linter CI slowdowns, helping teams get things done faster. Teams in similar situations might appreciate Styler.
+Styler was designed for a **large team (40+ engineers) working in a single codebase. It helps remove fiddly code review comments and removes failed linter CI slowdowns, helping teams get things done faster. Teams in similar situations might appreciate Styler.
 
 Its automations are also extremely valuable for taming legacy elixir codebases or just refactoring in general. Some of its rewrites have inspired code actions in elixir language servers.
 
 Conversely, Styler probably _isn't_ a good match for:
 
-- libraries
 - experimental, macro-heavy codebases
-- small teams that don't want to think about code standards
+- teams that don't care about code standards
 
 ## Installation
 
@@ -41,7 +41,7 @@ Add `:styler` as a dependency to your project's `mix.exs`:
 ```elixir
 def deps do
   [
-    {:styler, "~> 1.0.0-rc.1", only: [:dev, :test], runtime: false},
+    {:styler, "~> 1.1", only: [:dev, :test], runtime: false},
   ]
 end
 ```
