@@ -21,7 +21,6 @@ defmodule Styler.Style.ModuleDirectives do
 
     * `Credo.Check.Consistency.MultiAliasImportRequireUse` (force expansion)
     * `Credo.Check.Readability.AliasOrder` (we sort `__MODULE__`, which credo doesn't)
-    * `Credo.Check.Readability.ModuleDoc` (adds `@moduledoc false` if missing. includes `*.exs` files)
     * `Credo.Check.Readability.MultiAlias`
     * `Credo.Check.Readability.StrictModuleLayout` (see section below for details)
     * `Credo.Check.Readability.UnnecessaryAliasExpansion`
@@ -50,7 +49,6 @@ defmodule Styler.Style.ModuleDirectives do
   @directives ~w(alias import require use)a
   @attr_directives ~w(moduledoc shortdoc behaviour)a
   @defstruct ~w(schema embedded_schema defstruct)a
-  @moduledoc_false {:@, [line: nil], [{:moduledoc, [line: nil], [{:__block__, [line: nil], [false]}]}]}
 
   def run({{:defmodule, _, children}, _} = zipper, ctx) do
     [name, [{{:__block__, do_meta, [:do]}, _body}]] = children
@@ -131,14 +129,6 @@ defmodule Styler.Style.ModuleDirectives do
   end
 
   def run(zipper, ctx), do: {:cont, zipper, ctx}
-
-  defp moduledoc({:__aliases__, m, aliases}) do
-    name = aliases |> List.last() |> to_string()
-    # module names ending with these suffixes will not have a default moduledoc appended
-    if !String.ends_with?(name, ~w(Test Mixfile MixProject Controller Endpoint Repo Router Socket View HTML JSON)) do
-      Style.set_line(@moduledoc_false, m[:line] + 1)
-    end
-  end
 
   # a dynamic module name, like `defmodule my_variable do ... end`
   defp moduledoc(_), do: nil
