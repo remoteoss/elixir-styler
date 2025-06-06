@@ -4,6 +4,231 @@
 they can and will change without that change being reflected in Styler's semantic version.
 ## main
 
+## 1.4.2
+
+### Fixes
+
+- fix comment misplacement for large comment blocks in config files and `# styler:sort` (#230, h/t @cschmatzler)
+
+## 1.4.1
+
+### Improvements
+
+- `to_timeout/1` rewrites to use the next largest unit in some simple instances
+
+    ```elixir
+    # before
+    to_timeout(second: 60 * m)
+    to_timeout(day: 7)
+    # after
+    to_timeout(minute: m)
+    to_timeout(week: 1)
+    ```
+
+### Fixes
+
+- fixed styler raising when encountering invalid function definition ast
+
+## 1.4.0
+
+- A very nice change in alias lifting means Styler will make sure that your code is _using_ the aliases that it's specified.
+- Shoutout to the smartrent folks for finding pipifying recursion issues
+- Elixir 1.17 improvements and fixes
+- Elixir 1.19-dev: delete struct updates
+
+Read on for details.
+
+### Improvements
+
+#### Alias Lifting
+
+This release taught Styler to try just that little bit harder when doing alias lifting.
+
+- general improvements around conflict detection, lifting in more correct places and fewer incorrect places (#193, h/t @jsw800)
+- use knowledge of existing aliases to shorten invocations (#201, h/t me)
+
+    example:
+
+        alias A.B.C
+
+        A.B.C.foo()
+        A.B.C.bar()
+        A.B.C.baz()
+
+    becomes:
+
+        alias A.B.C
+
+        C.foo()
+        C.bar()
+        C.baz()
+
+#### Struct Updates => Map Updates
+
+1.19 deprecates struct update syntax in favor of map update syntax.
+
+```elixir
+# This
+%Struct{x | y}
+# Styles to this
+%{x | y}
+```
+
+**WARNING** Double check your diffs to make sure your variable is pattern matching against the same struct if you want to harness 1.19's type checking features. Apologies to folks who hoped Styler would do this step for you <3 (#199, h/t @SteffenDE)
+
+#### Ex1.17+
+
+- Replace `:timer.units(x)` with the new `to_timeout(unit: x)` for `hours|minutes|seconds` (This style is only applied if you're on 1.17+)
+
+### Fixes
+
+- `pipes`: handle pipifying when the first arg is itself a pipe: `c(a |> b, d)` => `a |> b() |> c(d)` (#214, h/t @kybishop)
+- `pipes`: handle pipifying nested functions `d(c(a |> b))` => `a |> b |> c() |> d` (#216, h/t @emkguts)
+- `with`: fix a stabby `with` `, else: (_ -> :ok)` being rewritten to a case (#219, h/t @iamhassangm)
+
+## 1.3.3
+
+### Improvements
+
+- `with do: body` and variations with no arrows in the head will be rewritten to just `body`
+- `# styler:sort` will sort arbitrary ast nodes within a `do end` block:
+
+    Given:
+
+        # styler:sort
+        my_macro "some arg" do
+          another_macro :q
+          another_macro :w
+          another_macro :e
+          another_macro :r
+          another_macro :t
+          another_macro :y
+        end
+
+    We get
+
+        # styler:sort
+        my_macro "some arg" do
+          another_macro :e
+          another_macro :q
+          another_macro :r
+          another_macro :t
+          another_macro :w
+          another_macro :y
+        end
+
+### Fixes
+
+- fix a bug in comment-movement when multiple `# styler:sort` directives are added to a file at the same time
+
+## 1.3.2
+
+### Improvements
+
+- `# styler:sort` can be used to sort values of key-value pairs. eg, sort the value of a single key in a map (Closes #208, h/t @ypconstante)
+
+## 1.3.1
+
+### Improvements
+
+- `# styler:sort` now works with maps and the `defstruct` macro
+
+### Fixes
+
+- `# styler:sort` no longer blows up on keyword lists :X
+
+## 1.3.0
+
+### Improvements
+
+#### `# styler:sort` Styler's first comment directive
+
+Styler will now keep a user-designated list or wordlist (`~w` sigil) sorted as part of formatting via the use of comments. Elements of the list are sorted by their string representation.
+
+The intention is to remove comments to humans, like `# Please keep this list sorted!`, in favor of comments to robots: `# styler:sort`. Personally speaking, Styler is much better at alphabetical-order than I ever will be.
+
+To use the new directive, put it on the line before a list or wordlist.
+
+This example:
+
+```elixir
+# styler:sort
+[:c, :a, :b]
+
+# styler:sort
+~w(a list of words)
+
+# styler:sort
+@country_codes ~w(
+  en_US
+  po_PO
+  fr_CA
+  ja_JP
+)
+
+# styler:sort
+a_var =
+  [
+    Modules,
+    In,
+    A,
+    List
+  ]
+```
+
+Would yield:
+
+```elixir
+# styler:sort
+[:a, :b, :c]
+
+# styler:sort
+~w(a list of words)
+
+# styler:sort
+@country_codes ~w(
+  en_US
+  fr_CA
+  ja_JP
+  po_PO
+)
+
+# styler:sort
+a_var =
+  [
+    A,
+    In,
+    List,
+    Modules
+  ]
+```
+
+## 1.2.1
+
+### Fixes
+
+* `|>` don't pipify when the call is itself in a pipe (aka don't touch `a |> b(c |> d() |>e()) |> f()`) (Closes #204, h/t @paulswartz)
+
+## 1.2.0
+
+### Improvements
+
+* `pipes`: pipe-ifies when first arg to a function is a pipe. reach out if this happens in unstylish places in your code (Closes #133)
+* `pipes`: unpiping assignments will make the assignment one-line when possible (Closes #181)
+* `deprecations`: 1.18 deprecations
+    * `List.zip` => `Enum.zip`
+    * `first..last = range` => `first..last//_ = range`
+
+### Fixes
+
+* `pipes`: optimizations are less likely to move comments (Closes #176)
+
+## 1.1.2
+
+### Improvements
+
+* Config Sorting: improve comment handling when only sorting a few nodes (Closes #187)
+
 ## 1.1.1
 
 ### Improvements

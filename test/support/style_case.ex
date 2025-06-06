@@ -41,11 +41,11 @@ defmodule Styler.StyleCase do
       if styled != expected and ExUnit.configuration()[:trace] do
         IO.puts("\n======Given=============\n")
         IO.puts(before)
-        {before_ast, before_comments} = Styler.string_to_quoted_with_comments(before)
+        {before_ast, before_comments} = Styler.string_to_ast(before)
         dbg(before_ast)
         dbg(before_comments)
         IO.puts("======Expected AST==========\n")
-        {expected_ast, expected_comments} = Styler.string_to_quoted_with_comments(expected)
+        {expected_ast, expected_comments} = Styler.string_to_ast(expected)
         dbg(expected_ast)
         dbg(expected_comments)
         IO.puts("======Got AST===============\n")
@@ -83,6 +83,7 @@ defmodule Styler.StyleCase do
                 _ -> false
               end
 
+          # This isn't enabled in any test, but can be a useful audit
           if @ordered_siblings do
             case Zipper.left(zipper) do
               {{_, prev_meta, _} = prev, _} ->
@@ -108,7 +109,7 @@ defmodule Styler.StyleCase do
             dbg(styled_ast)
 
             IO.puts("expected:")
-            dbg(elem(Styler.string_to_quoted_with_comments(expected), 0))
+            dbg(elem(Styler.string_to_ast(expected), 0))
 
             IO.puts("code:\n#{styled}")
             flunk("")
@@ -134,11 +135,11 @@ defmodule Styler.StyleCase do
   end
 
   def style(code, filename \\ "testfile") do
-    {ast, comments} = Styler.string_to_quoted_with_comments(code)
+    {ast, comments} = Styler.string_to_ast(code)
     {styled_ast, comments} = Styler.style({ast, comments}, filename, on_error: :raise)
 
     try do
-      styled_code = styled_ast |> Styler.quoted_to_string(comments) |> String.trim_trailing("\n")
+      styled_code = styled_ast |> Styler.ast_to_string(comments) |> String.trim_trailing("\n")
       {styled_ast, styled_code, comments}
     rescue
       exception ->

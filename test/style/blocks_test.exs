@@ -156,6 +156,11 @@ defmodule Styler.Style.BlocksTest do
         z
         """
       )
+
+      assert_style "with do: x", "x"
+      assert_style "with do x end", "x"
+      assert_style "with do x else foo -> bar end", "x"
+      assert_style "with foo() do bar() else _ -> baz() end", "foo()\nbar()"
     end
 
     test "doesn't false positive with vars" do
@@ -202,7 +207,7 @@ defmodule Styler.Style.BlocksTest do
         """
       )
 
-      for nontrivial_head <- ["foo", ":ok <- foo, :ok <- bar"] do
+      for nontrivial_head <- [":ok <- foo, :ok <- bar"] do
         assert_style("""
         with #{nontrivial_head} do
           :success
@@ -494,6 +499,7 @@ defmodule Styler.Style.BlocksTest do
       assert_style(
         """
         with {:ok, a} <- foo(),
+             x = y,
              {:ok, b} <- bar(a) do
           {:ok, b}
         else
@@ -502,6 +508,7 @@ defmodule Styler.Style.BlocksTest do
         """,
         """
         with {:ok, a} <- foo() do
+          x = y
           bar(a)
         end
         """
@@ -553,6 +560,20 @@ defmodule Styler.Style.BlocksTest do
           end
       end
       """
+    end
+
+    test "elixir1.17+ stab regressions" do
+      assert_style(
+        """
+        with :ok <- foo, do: :bar, else: (_ -> :baz)
+        """,
+        """
+        case foo do
+          :ok -> :bar
+          _ -> :baz
+        end
+        """
+      )
     end
   end
 
@@ -713,6 +734,32 @@ defmodule Styler.Style.BlocksTest do
   end
 
   describe "if" do
+    test "drops else nil" do
+      assert_style("if a, do: b, else: nil", "if a, do: b")
+
+      assert_style("if a do b else nil end", """
+      if a do
+        b
+      end
+      """)
+
+      assert_style(
+        """
+        if a != b do
+          # comment
+        else
+          :ok
+        end
+        """,
+        """
+        if a == b do
+          # comment
+          :ok
+        end
+        """
+      )
+    end
+
     test "double negator rewrites" do
       for a <- ~w(not !), block <- ["do: z", "do: z, else: zz"] do
         assert_style "if #{a} (x != y), #{block}", "if x == y, #{block}"

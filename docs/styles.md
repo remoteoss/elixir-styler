@@ -47,7 +47,7 @@ Note that all of the examples below also apply to pipes (`enum |> Enum.into(...)
 | `Enum.into(enum, %{})` | `Map.new(enum)`|
 | `Enum.into(enum, Map.new())` | `Map.new(enum)`|
 | `Enum.into(enum, Keyword.new())` | `Keyword.new(enum)`|
-| `Enum.into(enum, MapSet.new())` | `Keyword.new(enum)`|
+| `Enum.into(enum, MapSet.new())` | `MapSet.new(enum)`|
 | `Enum.into(enum, %{}, fn x -> {x, x} end)` | `Map.new(enum, fn x -> {x, x} end)`|
 | `Enum.into(enum, [])` | `Enum.to_list(enum)` |
 | `Enum.into(enum, [], mapper)` | `Enum.map(enum, mapper)`|
@@ -109,7 +109,13 @@ baz |> Enum.reverse() |> Enum.concat(bop)
 Enum.reverse(baz, bop)
 ```
 
-## `Timex.now/0` ->` DateTime.utc_now/0`
+# Before
+baz |> Enum.reverse() |> Enum.concat(bop)
+# Styled
+Enum.reverse(baz, bop)
+```
+
+## `Timex.now/0` -> `DateTime.utc_now/0`
 
 Timex certainly has its uses, but knowing what stdlib date/time struct is returned by `now/0` is a bit difficult!
 
@@ -137,6 +143,27 @@ DateTime.compare(start, end_date) == :lt
 DateTime.before?(start, end_date)
 ```
 
+## Implicit `try`
+
+Styler will rewrite functions whose entire body is a try/do to instead use the implicit try syntax, per Credo's `Credo.Check.Readability.PreferImplicitTry`
+
+```elixir
+# before
+def foo do
+  try do
+    throw_ball()
+  catch
+    :ball -> :caught
+  end
+end
+
+# Styled:
+def foo do
+  throw_ball()
+catch
+  :ball -> :caught
+end
+```
 
 ## Remove parenthesis from 0-arity function & macro definitions
 
@@ -144,44 +171,19 @@ The author of the library disagrees with this style convention :) BUT, the wonde
 
 ```elixir
 # Before
-def foo()
-defp foo()
-defmacro foo()
-defmacrop foo()
+def foo() do
+defp foo() do
+defmacro foo() do
+defmacrop foo() do
 
 # Styled
-def foo
-defp foo
-defmacro foo
-defmacrop foo
+def foo do
+defp foo do
+defmacro foo do
+defmacrop foo do
 ```
 
-## Elixir Deprecation Rewrites
-
-### 1.15+
-
-| Before | After |
-|--------|-------|
-| `Logger.warn` | `Logger.warning`|
-| `Path.safe_relative_to/2` | `Path.safe_relative/2`|
-| `~R/my_regex/` | `~r/my_regex/`|
-| `Enum/String.slice/2` with decreasing ranges | add explicit steps to the range * |
-| `Date.range/2` with decreasing range | `Date.range/3` *|
-| `IO.read/bin_read` with `:all` option | replace `:all` with `:eof`|
-
-\* For both of the "decreasing range" changes, the rewrite can only be applied if the range is being passed as an argument to the function.
-
-### 1.16+
-File.stream! `:line` and `:bytes` deprecation
-
-```elixir
-# Before
-File.stream!(path, [encoding: :utf8, trim_bom: true], :line)
-# Styled
-File.stream!(path, :line, encoding: :utf8, trim_bom: true)
-```
-
-## Putting variable matching on the right
+## Variable matching on the right
 
 ```elixir
 # Before
@@ -221,26 +223,6 @@ end
 # Styled
 case foo do
   bar -> :ok
-end
-```
-
-## Use Implicit Try
-
-```elixir
-# before
-def foo d
-  try do
-    throw_ball()
-  catch
-    :ball -> :caught
-  end
-end
-
-# Styled:
-def foo d
-  throw_ball()
-catch
-  :ball -> :caught
 end
 ```
 
