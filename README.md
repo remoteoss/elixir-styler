@@ -11,17 +11,18 @@ You can learn more about the history, purpose and implementation of Styler from 
 
 ## Features
 
-- auto-fixes [many credo rules](docs/credo.md), meaning you can turn them off to speed credo up
-- [keeps a strict module layout](docs/module_directives.md#directive-organization)
-  - alphabetizes module directives
-- [extracts repeated aliases](docs/module_directives.md#alias-lifting)
-- [makes your pipe chains pretty as can be](docs/pipes.md)
-  - pipes and unpipes function calls based on the number of calls
-  - optimizes standard library calls (`a |> Enum.map(m) |> Enum.into(Map.new)` => `Map.new(a, m)`)
-- replaces strings with sigils when the string has many escaped quotes
-- ... and so much more
+Styler fixes a plethora of elixir style and optimization issues automatically as part of mix format.
 
-[See our Rewrites documentation on hexdocs](https://hexdocs.pm/styler/styles.html)
+[See Styler's documentation on Hex](https://hexdocs.pm/styler/styles.html) for the comprehensive list of its features.
+
+The fastest way to see what all it can do you for you is to just try it out in your codebase... but here's a list of a few features to help you decide if you're interested in Styler:
+
+- sorts and organizes `import`/`alias`/`require` and other [module directives](docs/module_directives.md)
+- keeps lists, sigils, and even arbitrary code sorted with the `# styler:sort` [comment directive](docs/comment_directives.md)
+- automatically creates aliases for repeatedly referenced modules names ([_"alias lifting"_](docs/module_directives.md#alias-lifting))
+- optimizes pipe chains for [readability and performance](docs/pipes.md)
+- rewrites strings as sigils when it results in fewer escapes
+- auto-fixes [many credo rules](docs/credo.md), meaning you can spend less time fighting with CI
 
 ## Who is Styler for?
 
@@ -41,7 +42,7 @@ Add `:styler` as a dependency to your project's `mix.exs`:
 ```elixir
 def deps do
   [
-    {:styler, "~> 1.1", only: [:dev, :test], runtime: false},
+    {:styler, "~> 1.4", only: [:dev, :test], runtime: false},
   ]
 end
 ```
@@ -75,10 +76,54 @@ Styler's only current configuration option is `:alias_lifting_exclude`, which ac
 
 #### No Credo-Style Enable/Disable
 
-Styler [will not add configuration](https://github.com/adobe/elixir-styler/pull/127#issuecomment-1912242143) for ad-hoc enabling/disabling of rewrites. Sorry! Its implementation simply does not support that approach. There are however many forks out there that have attempted this; please explore the [Github forks tab](https://github.com/adobe/elixir-styler/forks) to see if there's a project that suits your needs or that you can draw inspiration from.
+Styler [will not add configuration](https://github.com/adobe/elixir-styler/pull/127#issuecomment-1912242143) for ad-hoc enabling/disabling of rewrites. Sorry!
+
+However, Smartrent has a fork of Styler named [Quokka](https://github.com/smartrent/quokka) that allows for finegrained control of Styler. Maybe it's what you're looking for. If not, you can always fork it or Styler as a starting point for your own tool!
 
 Ultimately Styler is @adobe's internal tool that we're happy to share with the world. We're delighted if you like it as is, and just as excited if it's a starting point for you to make something even better for yourself.
 
+## WARNING: Styler can change the behaviour of your program!
+
+In some cases, this can introduce bugs. It goes without saying, but look over your changes before committing to main :)
+
+A simple example of a way Styler changes the behaviour of code is the following rewrite:
+
+```elixir
+# Before: this case statement...
+case foo do
+  true -> :ok
+  false -> :error
+end
+
+# After: ... is rewritten by Styler to be an if statement!.
+if foo do
+  :ok
+else
+  :error
+end
+```
+
+These programs are not semantically equivalent. The former would raise if `foo` returned any value other than `true` or `false`, while the latter blissfully completes.
+
+However, Styler is about _style_, and the `if` statement is (in our opinion) of much better style. If the exception behaviour was intentional on the code author's part, they should have written the program like this:
+
+```elixir
+case foo do
+  true -> :ok
+  false -> :error
+  other -> raise "expected `true` or `false`, got: #{inspect other}"
+end
+```
+
+Also good style! But Styler assumes that most of the time people just meant the `if` equivalent of the code, and so makes that change. If issues like this bother you, Styler probably isn't the tool you're looking for.
+
+Other ways Styler can change your program:
+
+- [`with` statement rewrites](https://github.com/adobe/elixir-styler/issues/186)
+- [config file sorting](https://hexdocs.pm/styler/mix_configs.html#this-can-break-your-program)
+- and likely other ways. stay safe out there!
+
+>>>>>>> upstream/main
 ## Thanks & Inspiration
 
 ### [Sourceror](https://github.com/doorgan/sourceror/)

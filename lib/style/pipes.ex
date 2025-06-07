@@ -50,29 +50,129 @@ defmodule Styler.Style.Pipes do
           {{:|>, _, [_, {:unquote, _, [_]}]}, _} = single_pipe_unquote_zipper ->
             {:cont, single_pipe_unquote_zipper, ctx}
 
+          # unpipe a single pipe zipper
           {{:|>, _, [lhs, rhs]}, _} = single_pipe_zipper ->
-            {_, meta, _} = lhs
-            # try to get everything on one line if we can
-            line = meta[:line]
-            {fun, meta, args} = rhs
+            {fun, rhs_meta, args} = rhs
+            {_, lhs_meta, _} = lhs
+            lhs_line = lhs_meta[:line]
             args = args || []
+            # Every branch ends with the zipper being replaced with a function call
+            # `lhs |> rhs(...args)` => `rhs(lhs, ...args)`
+            # The differences are just figuring out what line number updates to make
+            # in order to get the following properties:
+            #
+            # 1. write the function call on one line if reasonable
+            # 2. keep comments well behaved (by doing meta line-number gymnastics)
 
-            # no way multi-headed fn fits on one line; everything else (?) is just a matter of line length
-            args =
-              if Enum.any?(args, &match?({:fn, _, [{:->, _, _}, {:->, _, _} | _]}, &1)) do
-                Style.shift_line(args, -1)
-              else
-                Style.set_line(args, line)
+            # if we see multiple `->`, there's no way we can online this
+            # future heuristics would include finding multiple lines
+            definitively_multiline? =
+              Enum.any?(args, fn
+                {:fn, _, [{:->, _, _}, {:->, _, _} | _]} -> true
+                {:fn, _, [{:->, _, [_, _]}]} -> true
+                _ -> false
+              end)
+
+            if definitively_multiline? do
+              # shift rhs up to hang out with lhs
+              # 1   lhs
+              # 2   |> fun(
+              # 3     ...args...
+              # n   )
+              # =>
+              # 1   fun(lhs
+              # 2     ... args...
+              # n-1 )
+
+              # because there could be comments between lhs and rhs, or the dev may have a bunch of empty lines,
+              # we need to calculate the distance between the two ("shift")
+              rhs_line = rhs_meta[:line]
+              shift = lhs_line - rhs_line
+              {fun, meta, args} = Style.shift_line(rhs, shift)
+
+              # Not going to lie, no idea why the `shift + 1` is correct but it makes tests pass ¯\_(ツ)_/¯
+              rhs_max_line = Style.max_line(rhs)
+
+              comments =
+                ctx.comments
+                |> Style.displace_comments(lhs_line..(rhs_line - 1)//1)
+                |> Style.shift_comments(rhs_line..rhs_max_line, shift + 1)
+
+              {:cont, Zipper.replace(single_pipe_zipper, {fun, meta, [lhs | args]}), %{ctx | comments: comments}}
+            else
+              # try to get everything on one line.
+              # formatter will kick it back to multiple if line-length doesn't accommodate
+              case Zipper.up(single_pipe_zipper) do
+                # if the parent is an assignment, put it on the same line as the `=`
+                {{:=, am, [{_, vm, _} = var, _single_pipe]}, _} = assignment_parent ->
+                  # 1 var =
+                  # 2   lhs
+                  # 3   |> rhs(...args)
+                  # =>
+                  # 1 var = rhs(lhs, ...args)
+                  oneline_assignment = Style.set_line({:=, am, [var, {fun, rhs_meta, [lhs | args]}]}, vm[:line])
+                  # skip so we don't re-traverse
+                  {:cont, Zipper.replace(assignment_parent, oneline_assignment), ctx}
+
+                _ ->
+                  # lhs
+                  # |> rhs(...args)
+                  # =>
+                  # rhs(lhs, ...)
+                  oneline_function_call = Style.set_line({fun, rhs_meta, [lhs | args]}, lhs_line)
+                  {:cont, Zipper.replace(single_pipe_zipper, oneline_function_call), ctx}
               end
-
-            lhs = Style.set_line(lhs, line)
-            {_, meta, _} = Style.set_line({:ignore, meta, []}, line)
-            function_call_zipper = Zipper.replace(single_pipe_zipper, {fun, meta, [lhs | args]})
-            {:cont, function_call_zipper, ctx}
+            end
         end
 
       non_pipe ->
         {:cont, non_pipe, ctx}
+    end
+  end
+
+  # a(b |> c[, ...args])
+  # The first argument to a function-looking node is a pipe.
+  # Maybe pipify the whole thing?
+  def run({{f, m, [{:|>, _, _} = pipe | args]}, _} = zipper, ctx) do
+    parent =
+      case Zipper.up(zipper) do
+        {{parent, _, _}, _} -> parent
+        _ -> nil
+      end
+
+    stringified = is_atom(f) && to_string(f)
+
+    cond do
+      # this is likely a macro
+      # assert a |> b() |> c()
+      !m[:closing] ->
+        {:cont, zipper, ctx}
+
+      # leave bools alone as they often read better coming first, like when prepended with `not`
+      # [not ]is_nil(a |> b() |> c())
+      stringified && (String.starts_with?(stringified, "is_") or String.ends_with?(stringified, "?")) ->
+        {:cont, zipper, ctx}
+
+      # string interpolation, module attribute assignment, or prettier bools with not
+      parent in [:"::", :@, :not, :|>] ->
+        {:cont, zipper, ctx}
+
+      # double down on being good to exunit macros, and any other special ops
+      # ..., do: assert(a |> b |> c)
+      # not (a |> b() |> c())
+      f in [:assert, :refute | @special_ops] ->
+        {:cont, zipper, ctx}
+
+      # if a |> b() |> c(), do: ...
+      Enum.any?(args, &Style.do_block?/1) ->
+        {:cont, zipper, ctx}
+
+      true ->
+        zipper = Zipper.replace(zipper, {:|>, m, [pipe, {f, m, args}]})
+        # it's possible this is a nested function call `c(b(a |> b))`, so we should walk up the tree for de-nesting
+        zipper = Zipper.up(zipper) || zipper
+        # recursion ensures we get those nested function calls and any additional pipes
+        run(zipper, ctx)
     end
   end
 
@@ -162,7 +262,7 @@ defmodule Styler.Style.Pipes do
   # `pipe_chain(a, b, c)` generates the ast for `a |> b |> c`
   # the intention is to make it a little easier to see what the fix_pipe functions are matching on =)
   defmacrop pipe_chain(pm, a, b, c) do
-    quote do: {:|>, unquote(pm), [{:|>, _, [unquote(a), unquote(b)]}, unquote(c)]}
+    quote do: {:|>, _, [{:|>, unquote(pm), [unquote(a), unquote(b)]}, unquote(c)]}
   end
 
   # a |> fun => a |> fun()
@@ -261,7 +361,7 @@ defmodule Styler.Style.Pipes do
          )
        )
        when mod in @enum do
-    rhs = Style.set_line({{:., dm, [enum, :map_join]}, em, join_args ++ map_args}, dm[:line])
+    rhs = {{:., dm, [enum, :map_join]}, em, Style.set_line(join_args, dm[:line]) ++ map_args}
     {:|>, pm, [lhs, rhs]}
   end
 
@@ -272,7 +372,7 @@ defmodule Styler.Style.Pipes do
          pipe_chain(
            pm,
            lhs,
-           {{:., dm, [{_, _, [mod]}, :map]}, _, [mapper]},
+           {{:., dm, [{_, _, [mod]}, :map]}, em, [mapper]},
            {{:., _, [{_, _, [:Enum]}, :into]} = into, _, [collectable]}
          )
        )
@@ -280,16 +380,17 @@ defmodule Styler.Style.Pipes do
     rhs =
       case collectable do
         {{:., _, [{_, _, [mod]}, :new]}, _, []} when mod in @collectable ->
-          {{:., dm, [{:__aliases__, dm, [mod]}, :new]}, dm, [mapper]}
+          {{:., dm, [{:__aliases__, dm, [mod]}, :new]}, em, [mapper]}
 
         {:%{}, _, []} ->
-          {{:., dm, [{:__aliases__, dm, [:Map]}, :new]}, dm, [mapper]}
+          {{:., dm, [{:__aliases__, dm, [:Map]}, :new]}, em, [mapper]}
 
         _ ->
-          {into, dm, [collectable, mapper]}
+          {into, m, [collectable]} = Style.set_line({into, em, [collectable]}, dm[:line])
+          {into, m, [collectable, mapper]}
       end
 
-    Style.set_line({:|>, pm, [lhs, rhs]}, dm[:line])
+    {:|>, pm, [lhs, rhs]}
   end
 
   # `lhs |> Enum.map(mapper) |> Map.new()` => `lhs |> Map.new(mapper)`
@@ -297,12 +398,12 @@ defmodule Styler.Style.Pipes do
          pipe_chain(
            pm,
            lhs,
-           {{:., _, [{_, _, [enum]}, :map]}, _, [mapper]},
-           {{:., _, [{_, _, [mod]}, :new]} = new, nm, []}
+           {{:., _, [{_, _, [enum]}, :map]}, em, [mapper]},
+           {{:., _, [{_, _, [mod]}, :new]} = new, _, []}
          )
        )
        when mod in @collectable and enum in @enum do
-    Style.set_line({:|>, pm, [lhs, {new, nm, [mapper]}]}, nm[:line])
+    {:|>, pm, [lhs, {Style.set_line(new, em[:line]), em, [mapper]}]}
   end
 
   defp fix_pipe(node), do: node

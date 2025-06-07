@@ -90,7 +90,7 @@ defmodule Styler.Style.PipesTest do
             y
           end
 
-        a(foo(if_result), b)
+        if_result |> foo() |> a(b)
         """
       )
     end
@@ -402,13 +402,13 @@ defmodule Styler.Style.PipesTest do
       assert_style(
         """
         def halt(exec, halt_message) do
-          %__MODULE__{exec | halted: true}
+          %{exec | halted: true}
           |> put_halt_message(halt_message)
         end
         """,
         """
         def halt(exec, halt_message) do
-          put_halt_message(%__MODULE__{exec | halted: true}, halt_message)
+          put_halt_message(%{exec | halted: true}, halt_message)
         end
         """
       )
@@ -430,6 +430,18 @@ defmodule Styler.Style.PipesTest do
 
         foo(if_result, bar)
         """
+      )
+    end
+
+    test "onelines assignments" do
+      assert_style(
+        """
+        x =
+          y
+          |> Enum.map(&f/1)
+          |> Enum.join()
+        """,
+        "x = Enum.map_join(y, &f/1)"
       )
     end
   end
@@ -677,16 +689,24 @@ defmodule Styler.Style.PipesTest do
 
         assert_style(
           """
+          # a
+          # b
           a_multiline_mapper
           |> #{enum}.map(fn %{gets: shrunk, down: to_a_more_reasonable} ->
+            # c
             IO.puts "woo!"
+            # d
             {shrunk, to_a_more_reasonable}
           end)
           |> Enum.into(size)
           """,
           """
+          # a
+          # b
           Enum.into(a_multiline_mapper, size, fn %{gets: shrunk, down: to_a_more_reasonable} ->
+            # c
             IO.puts("woo!")
+            # d
             {shrunk, to_a_more_reasonable}
           end)
           """
@@ -747,31 +767,207 @@ defmodule Styler.Style.PipesTest do
     end
   end
 
-  describe "comments" do
-    test "unpiping doesn't move comment in anonymous function" do
+  describe "comments and..." do
+    test "unpiping" do
+      assert_style(
+        """
+        aliased =
+          aliases
+          |> MapSet.new(fn
+            {:alias, _, [{:__aliases__, _, aliases}]} -> List.last(aliases)
+            {:alias, _, [{:__aliases__, _, _}, [{_as, {:__aliases__, _, [as]}}]]} -> as
+            # alias __MODULE__ or other oddities
+            {:alias, _, _} -> nil
+          end)
+
+        excluded_first = MapSet.union(aliased, @excluded_namespaces)
+        """,
+        """
+        aliased =
+          MapSet.new(aliases, fn
+            {:alias, _, [{:__aliases__, _, aliases}]} -> List.last(aliases)
+            {:alias, _, [{:__aliases__, _, _}, [{_as, {:__aliases__, _, [as]}}]]} -> as
+            # alias __MODULE__ or other oddities
+            {:alias, _, _} -> nil
+          end)
+
+        excluded_first = MapSet.union(aliased, @excluded_namespaces)
+        """
+      )
+
+      assert_style(
+        """
+        foo =
+          # bar
+          bar
+          # baz
+          |> baz(fn ->
+            # a
+            a
+            # b
+            b
+          end)
+        """,
+        """
+        # bar
+        # baz
+        foo =
+          baz(bar, fn ->
+            # a
+            a
+            # b
+            b
+          end)
+        """
+      )
+
+      assert_style(
+        """
+        foo =
+          # bar
+          bar
+          # baz
+
+
+
+          |> baz(fn ->
+            # a
+            a
+            # b
+            b
+          end)
+        """,
+        """
+        # bar
+        # baz
+        foo =
+          baz(bar, fn ->
+            # a
+            a
+            # b
+            b
+          end)
+        """
+      )
+    end
+
+    test "optimizing" do
+      assert_style(
+        """
+        a
+        |> Enum.map(fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Enum.join(x)
+        |> Enum.each(...)
+        """,
+        """
+        a
+        |> Enum.map_join(x, fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Enum.each(...)
+        """
+      )
+
+      assert_style(
+        """
+        a
+        |> Enum.map(fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Enum.into(x)
+        |> Enum.each(...)
+        """,
+        """
+        a
+        |> Enum.into(x, fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Enum.each(...)
+        """
+      )
+
+      assert_style(
+        """
+        a
+        |> Enum.map(fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Keyword.new()
+        |> Enum.each(...)
+        """,
+        """
+        a
+        |> Keyword.new(fn b ->
+          c
+          # a comment
+          d
+        end)
+        |> Enum.each(...)
+        """
+      )
+    end
+  end
+
+  describe "pipifying" do
+    test "no false positives" do
+      pipe = "a() |> b() |> c()"
+      assert_style pipe
+      assert_style String.replace(pipe, " |>", "\n|>")
+      assert_style "fn -> #{pipe} end"
+      assert_style "if #{pipe}, do: ..."
+      assert_style "x\n\n#{pipe}"
+      assert_style "@moduledoc #{pipe}"
+      assert_style "!(#{pipe})"
+      assert_style "not foo(#{pipe})"
+      assert_style ~s<"\#{#{pipe}}">
+    end
+
+    test "when it's not actually the first argument!" do
       assert_style """
-                     aliased =
-                       aliases
-                       |> MapSet.new(fn
-                         {:alias, _, [{:__aliases__, _, aliases}]} -> List.last(aliases)
-                         {:alias, _, [{:__aliases__, _, _}, [{_as, {:__aliases__, _, [as]}}]]} -> as
-                         # alias __MODULE__ or other oddities
-                         {:alias, _, _} -> nil
-                       end)
+      a
+      |> M.f0(b |> M.f1() |> M.f2())
+      |> M.f3()
+      """
+    end
 
-                     excluded_first = MapSet.union(aliased, @excluded_namespaces)
-                   """,
-                   """
-                   aliased =
-                     MapSet.new(aliases, fn
-                       {:alias, _, [{:__aliases__, _, aliases}]} -> List.last(aliases)
-                       {:alias, _, [{:__aliases__, _, _}, [{_as, {:__aliases__, _, [as]}}]]} -> as
-                       # alias __MODULE__ or other oddities
-                       {:alias, _, _} -> nil
-                     end)
+    test "pipifying" do
+      assert_style("e(d(a |> b |> c), f)", "a |> b() |> c() |> d() |> e(f)")
 
-                   excluded_first = MapSet.union(aliased, @excluded_namespaces)
-                   """
+      assert_style(
+        """
+        # d
+        d(
+        # a
+          a
+          # b
+          |> b
+          # c
+          |> c
+        )
+        """,
+        """
+        # d
+        # a
+        a
+        # b
+        |> b()
+        # c
+        |> c()
+        |> d()
+        """
+      )
     end
   end
 end

@@ -33,20 +33,38 @@ defmodule Styler.Style.DeprecationsTest do
     )
   end
 
-  describe "1.16 deprecations" do
-    @describetag skip: Version.match?(System.version(), "< 1.16.0-dev")
+  test "matching ranges" do
+    assert_style "first..last = range", "first..last//_ = range"
+    assert_style "^first..^last = range", "^first..^last//_ = range"
+    assert_style "first..last = x = y", "first..last//_ = x = y"
+    assert_style "y = first..last = x", "y = first..last//_ = x"
 
-    test "File.stream!(path, modes, line_or_bytes) to File.stream!(path, line_or_bytes, modes)" do
-      assert_style(
-        "File.stream!(path, [encoding: :utf8, trim_bom: true], :line)",
-        "File.stream!(path, :line, encoding: :utf8, trim_bom: true)"
-      )
+    assert_style "def foo(x..y), do: :ok", "def foo(x..y//_), do: :ok"
+    assert_style "def foo(a, x..y = z), do: :ok", "def foo(a, x..y//_ = z), do: :ok"
+    assert_style "def foo(%{a: x..y = z}), do: :ok", "def foo(%{a: x..y//_ = z}), do: :ok"
 
-      assert_style(
-        "f |> File.stream!([encoding: :utf8, trim_bom: true], :line) |> Enum.take(2)",
-        "f |> File.stream!(:line, encoding: :utf8, trim_bom: true) |> Enum.take(2)"
-      )
-    end
+    assert_style "with a..b = c <- :ok, d..e <- :better, do: :ok", "with a..b//_ = c <- :ok, d..e//_ <- :better, do: :ok"
+
+    assert_style(
+      """
+      case x do
+        a..b = c -> :ok
+        d..e -> :better
+      end
+      """,
+      """
+      case x do
+        a..b//_ = c -> :ok
+        d..e//_ -> :better
+      end
+      """
+    )
+  end
+
+  test "List.zip/1" do
+    assert_style "List.zip(foo)", "Enum.zip(foo)"
+    assert_style "foo |> List.zip |> bar", "foo |> Enum.zip() |> bar()"
+    assert_style "foo |> List.zip", "Enum.zip(foo)"
   end
 
   test "~R is deprecated in favor of ~r" do
@@ -95,6 +113,44 @@ defmodule Styler.Style.DeprecationsTest do
       assert_style "#{mod}.slice(x, y..z)"
       assert_style "#{mod}.slice(x, (y - 1)..f)"
       assert_style("foo |> bar() |> #{mod}.slice(x..y)")
+    end
+  end
+
+  test "struct update, deprecated in 1.19" do
+    assert_style "%Foo{widget | bar: :baz}", "%{widget | bar: :baz}"
+  end
+
+  describe "1.16+" do
+    @describetag skip: Version.match?(System.version(), "< 1.16.0-dev")
+
+    test "File.stream!(path, modes, line_or_bytes) to File.stream!(path, line_or_bytes, modes)" do
+      assert_style(
+        "File.stream!(path, [encoding: :utf8, trim_bom: true], :line)",
+        "File.stream!(path, :line, encoding: :utf8, trim_bom: true)"
+      )
+
+      assert_style(
+        "f |> File.stream!([encoding: :utf8, trim_bom: true], :line) |> Enum.take(2)",
+        "f |> File.stream!(:line, encoding: :utf8, trim_bom: true) |> Enum.take(2)"
+      )
+    end
+  end
+
+  describe "1.17+" do
+    @describetag skip: Version.match?(System.version(), "< 1.17.0-dev")
+
+    test "to_timeout/1 vs :timer.units(x)" do
+      assert_style ":timer.hours(x)", "to_timeout(hour: x)"
+      assert_style ":timer.minutes(x)", "to_timeout(minute: x)"
+      assert_style ":timer.seconds(x)", "to_timeout(second: x)"
+
+      assert_style "a |> x() |> :timer.hours()"
+      assert_style "a |> x() |> :timer.minutes()"
+      assert_style "a |> x() |> :timer.seconds()"
+    end
+
+    test "combined with to_timeout improvements" do
+      assert_style ":timer.minutes(60 * 4)", "to_timeout(hour: 4)"
     end
   end
 end

@@ -17,6 +17,20 @@ defmodule Styler.Style.Deprecations do
 
   def run({node, meta}, ctx), do: {:cont, {style(node), meta}, ctx}
 
+  # Deprecated in 1.18
+  # rewrite patterns of `first..last = ...` to `first..last//_ = ...`
+  defp style({:=, m, [{:.., _, [_first, _last]} = range, rhs]}), do: {:=, m, [rewrite_range_match(range), rhs]}
+  defp style({:->, m, [[{:.., _, [_first, _last]} = range], rhs]}), do: {:->, m, [[rewrite_range_match(range)], rhs]}
+  defp style({:<-, m, [{:.., _, [_first, _last]} = range, rhs]}), do: {:<-, m, [rewrite_range_match(range), rhs]}
+
+  defp style({def, dm, [{x, xm, params} | rest]}) when def in ~w(def defp)a and is_list(params),
+    do: {def, dm, [{x, xm, Enum.map(params, &rewrite_range_match/1)} | rest]}
+
+  # Deprecated in 1.18
+  # List.zip => Enum.zip
+  defp style({{:., dm_, [{:__aliases__, am, [:List]}, :zip]}, fm, arg}),
+    do: {{:., dm_, [{:__aliases__, am, [:Enum]}, :zip]}, fm, arg}
+
   # Logger.warn => Logger.warning
   # Started to emit warning after Elixir 1.15.0
   defp style({{:., dm, [{:__aliases__, am, [:Logger]}, :warn]}, funm, args}),
@@ -43,6 +57,17 @@ defmodule Styler.Style.Deprecations do
          when is_list(modes),
          do: {:|>, m, [lhs, {f, fm, [lob, opts]}]}
   end
+
+  if Version.match?(System.version(), ">= 1.17.0-dev") do
+    for {erl, ex} <- [hours: :hour, minutes: :minute, seconds: :second] do
+      defp style({{:., _, [{:__block__, _, [:timer]}, unquote(erl)]}, fm, [x]}),
+        do: {:to_timeout, fm, [[{{:__block__, [format: :keyword, line: fm[:line]], [unquote(ex)]}, x}]]}
+    end
+  end
+
+  # Struct update syntax is deprecated in 1.19
+  # `%Foo{x | y} => %{x | y}`
+  defp style({:%, _, [_struct, {:%{}, _, [{:|, _, _}]} = update]}), do: update
 
   # For ranges where `start > stop`, you need to explicitly include the step
   # Enum.slice(enumerable, 1..-2) => Enum.slice(enumerable, 1..-2//1)
@@ -84,6 +109,9 @@ defmodule Styler.Style.Deprecations do
 
   defp style(node), do: node
 
+  defp rewrite_range_match({:.., dm, [first, {_, m, _} = last]}), do: {:..//, dm, [first, last, {:_, m, nil}]}
+  defp rewrite_range_match(x), do: x
+
   defp add_step_to_date_range?(first, last) do
     with {:ok, f} <- extract_date_value(first),
          {:ok, l} <- extract_date_value(last),
@@ -100,7 +128,7 @@ defmodule Styler.Style.Deprecations do
          {:ok, stop} <- extract_value_from_range(last),
          true <- start > stop do
       step = {:__block__, [token: "1", line: lm[:line]], [1]}
-      {:"..//", rm, [first, last, step]}
+      {:..//, rm, [first, last, step]}
     else
       _ -> range
     end

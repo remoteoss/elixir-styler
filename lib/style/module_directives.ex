@@ -21,7 +21,6 @@ defmodule Styler.Style.ModuleDirectives do
 
     * `Credo.Check.Consistency.MultiAliasImportRequireUse` (force expansion)
     * `Credo.Check.Readability.AliasOrder` (we sort `__MODULE__`, which credo doesn't)
-    * `Credo.Check.Readability.ModuleDoc` (adds `@moduledoc false` if missing. includes `*.exs` files)
     * `Credo.Check.Readability.MultiAlias`
     * `Credo.Check.Readability.StrictModuleLayout` (see section below for details)
     * `Credo.Check.Readability.UnnecessaryAliasExpansion`
@@ -49,6 +48,7 @@ defmodule Styler.Style.ModuleDirectives do
 
   @directives ~w(alias import require use)a
   @attr_directives ~w(moduledoc shortdoc behaviour)a
+  @defstruct ~w(schema embedded_schema defstruct)a
 
   def run({{:defmodule, _, children}, _} = zipper, ctx) do
     [name, [{{:__block__, do_meta, [:do]}, _body}]] = children
@@ -99,6 +99,32 @@ defmodule Styler.Style.ModuleDirectives do
       {:ok, zipper} -> {:skip, zipper |> Zipper.up() |> organize_directives(), ctx}
       # not actually a directive! carry on.
       :error -> {:cont, zipper, ctx}
+    end
+  end
+
+  # puts `@derive` before `defstruct` etc, fixing compiler warnings
+  def run({{:@, _, [{:derive, _, _}]}, _} = zipper, ctx) do
+    case Style.ensure_block_parent(zipper) do
+      {:ok, {derive, {l, p, r}}} ->
+        previous_defstruct =
+          l
+          |> Stream.with_index()
+          |> Enum.find_value(fn
+            {{struct_def, meta, _}, index} when struct_def in @defstruct -> {meta[:line], index}
+            _ -> nil
+          end)
+
+        if previous_defstruct do
+          {defstruct_line, defstruct_index} = previous_defstruct
+          derive = Style.set_line(derive, defstruct_line - 1)
+          left_siblings = List.insert_at(l, defstruct_index + 1, derive)
+          {:skip, Zipper.remove({derive, {left_siblings, p, r}}), ctx}
+        else
+          {:cont, zipper, ctx}
+        end
+
+      :error ->
+        {:cont, zipper, ctx}
     end
   end
 
@@ -221,7 +247,7 @@ defmodule Styler.Style.ModuleDirectives do
         acc.behaviour
       ]
       |> Stream.concat()
-      |> Style.fix_line_numbers(List.first(nondirectives))
+      |> fix_line_numbers(List.first(nondirectives))
 
     # the # of aliases can be decreased during sorting - if there were any, we need to be sure to write the deletion
     if Enum.empty?(directives) do
@@ -240,8 +266,7 @@ defmodule Styler.Style.ModuleDirectives do
     # we can't use the dealias map built into state as that's what things look like before sorting
     # now that we've sorted, it could be different!
     dealiases = AliasEnv.define(aliases)
-    excluded = dealiases |> Map.keys() |> Enum.into(Styler.Config.get(:lifting_excludes))
-    liftable = find_liftable_aliases(requires ++ nondirectives, excluded)
+    liftable = find_liftable_aliases(requires ++ nondirectives, dealiases)
 
     if Enum.any?(liftable) do
       # This is a silly hack that helps comments stay put.
@@ -264,9 +289,15 @@ defmodule Styler.Style.ModuleDirectives do
     end
   end
 
-  defp find_liftable_aliases(ast, excluded) do
+  defp find_liftable_aliases(ast, dealiases) do
+    excluded = dealiases |> Map.keys() |> Enum.into(Styler.Config.get(:lifting_excludes))
+
+    firsts = MapSet.new(dealiases, fn {_last, [first | _]} -> first end)
+
     ast
     |> Zipper.zip()
+    # we're reducing a datastructure that looks like
+    # %{last => {aliases, seen_before?} | :some_collision_probelm}
     |> Zipper.reduce_while(%{}, fn
       # we don't want to rewrite alias name `defx Aliases ... do` of these three keywords
       {{defx, _, args}, _} = zipper, lifts when defx in ~w(defmodule defimpl defprotocol)a ->
@@ -287,19 +318,83 @@ defmodule Styler.Style.ModuleDirectives do
       {{:quote, _, _}, _} = zipper, lifts ->
         {:skip, zipper, lifts}
 
-      {{:__aliases__, _, [_, _, _ | _] = aliases}, _} = zipper, lifts ->
+      {{:__aliases__, _, [first, _, _ | _] = aliases}, _} = zipper, lifts ->
         last = List.last(aliases)
 
         lifts =
-          if last in excluded or not Enum.all?(aliases, &is_atom/1) do
-            lifts
-          else
-            Map.update(lifts, last, {aliases, false}, fn
-              {^aliases, _} -> {aliases, true}
-              # if we have `Foo.Bar.Baz` and `Foo.Bar.Bop.Baz` both not aliased, we'll create a collision by lifting both
-              # grouping by last alias lets us detect these collisions
-              _ -> :collision_with_last
-            end)
+          cond do
+            # this alias already exists, they just wrote it out fully and are leaving it up to us to shorten it down!
+            dealiases[last] == aliases ->
+              Map.put(lifts, last, {aliases, true})
+
+            last in excluded or Enum.any?(aliases, &(not is_atom(&1))) ->
+              lifts
+
+            # aliasing this would change the meaning of an existing alias
+            last > first and last in firsts ->
+              lifts
+
+            # We've seen this once before, time to mark it for lifting and do some bookkeeping for first-collisions
+            lifts[last] == {aliases, false} ->
+              lifts = Map.put(lifts, last, {aliases, true})
+
+              # Here's the bookkeeping for collisions with this alias's first module name...
+              case lifts[first] do
+                {:collision_with_first, claimants, colliders} ->
+                  # release our claim on this collision
+                  claimants = MapSet.delete(claimants, aliases)
+                  empty? = Enum.empty?(claimants)
+
+                  cond do
+                    empty? and Enum.any?(colliders) ->
+                      # no more claimants, try to promote a collider to be lifted
+                      colliders = Enum.to_list(colliders)
+                      # There's no longer a collision because the only claimant is being lifted.
+                      # So, promote a claimant with these criteria
+                      # - required: its first comes _after_ last, so we aren't promoting an alias that changes the meaning of the other alias we're doing
+                      # - preferred: take a collider we know we want to lift (we've seen it multiple times)
+                      lift =
+                        Enum.reduce_while(colliders, :collision_with_first, fn
+                          {[first | _], true} = liftable, _ when first > last ->
+                            {:halt, liftable}
+
+                          {[first | _], _false} = promotable, :collision_with_first when first > last ->
+                            {:cont, promotable}
+
+                          _, result ->
+                            {:cont, result}
+                        end)
+
+                      Map.put(lifts, first, lift)
+
+                    empty? ->
+                      Map.delete(lifts, first)
+
+                    true ->
+                      Map.put(lifts, first, {:collision_with_first, claimants, colliders})
+                  end
+
+                _ ->
+                  lifts
+              end
+
+            true ->
+              lifts
+              |> Map.update(last, {aliases, false}, fn
+                # if something is claiming the atom we want, add ourselves to the list of colliders
+                {:collision_with_first, claimers, colliders} ->
+                  {:collision_with_first, claimers, Map.update(colliders, aliases, false, fn _ -> true end)}
+
+                other ->
+                  other
+              end)
+              |> Map.update(first, {:collision_with_first, MapSet.new([aliases]), %{}}, fn
+                {:collision_with_first, claimers, colliders} ->
+                  {:collision_with_first, MapSet.put(claimers, aliases), colliders}
+
+                other ->
+                  other
+              end)
           end
 
         {:skip, zipper, lifts}
@@ -312,6 +407,7 @@ defmodule Styler.Style.ModuleDirectives do
         #   C.foo()
         #
         # lifting A.B.C would create a collision with C.
+        # unlike the collision_with_first tuple book-keeping, there's no recovery here because we won't lift a < 3 length alias
         {:skip, zipper, Map.put(lifts, first, :collision_with_first)}
 
       zipper, lifts ->
@@ -376,5 +472,67 @@ defmodule Styler.Style.ModuleDirectives do
     |> List.keysort(1)
     |> Enum.map(&elem(&1, 0))
     |> Style.reset_newlines()
+  end
+
+  # TODO investigate removing this in favor of the Style.post_sort_cleanup(node, comments)
+  # "Fixes" the line numbers of nodes who have had their orders changed via sorting or other methods.
+  # This "fix" simply ensures that comments don't get wrecked as part of us moving AST nodes willy-nilly.
+  #
+  # The fix is rather naive, and simply enforces the following property on the code:
+  # A given node must have a line number less than the following node.
+  # Et voila! Comments behave much better.
+  #
+  # ## In Detail
+  #
+  # For example, given document
+  #
+  #   1: defmodule ...
+  #   2: alias B
+  #   3: # this is foo
+  #   4: def foo ...
+  #   5: alias A
+  #
+  # Sorting aliases the ast node for  would put `alias A` (line 5) before `alias B` (line 2).
+  #
+  #   1: defmodule ...
+  #   5: alias A
+  #   2: alias B
+  #   3: # this is foo
+  #   4: def foo ...
+  #
+  # Elixir's document algebra would then encounter `line: 5` and immediately dump all comments with `line <= 5`,
+  # meaning after running through the formatter we'd end up with
+  #
+  #   1: defmodule
+  #   2: # hi
+  #   3: # this is foo
+  #   4: alias A
+  #   5: alias B
+  #   6:
+  #   7: def foo ...
+  #
+  # This function fixes that by seeing that `alias A` has a higher line number than its following sibling `alias B` and so
+  # updates `alias A`'s line to be preceding `alias B`'s line.
+  #
+  # Running the results of this function through the formatter now no longer dumps the comments prematurely
+  #
+  #   1: defmodule ...
+  #   2: alias A
+  #   3: alias B
+  #   4: # this is foo
+  #   5: def foo ...
+  defp fix_line_numbers(nodes, nil), do: fix_line_numbers(nodes, 999_999)
+  defp fix_line_numbers(nodes, {_, meta, _}), do: fix_line_numbers(nodes, meta[:line])
+  defp fix_line_numbers(nodes, max), do: nodes |> Enum.reverse() |> do_fix_lines(max, [])
+
+  defp do_fix_lines([], _, acc), do: acc
+
+  defp do_fix_lines([{_, meta, _} = node | nodes], max, acc) do
+    line = meta[:line]
+
+    # the -2 is just an ugly hack to leave room for one-liner comments and not hijack them.
+    if line > max,
+      do: do_fix_lines(nodes, max, [Style.shift_line(node, max - line - 2) | acc]),
+      else: do_fix_lines(nodes, line, [node | acc])
   end
 end

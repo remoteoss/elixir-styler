@@ -3,8 +3,6 @@ defmodule Styler.StyleTest do
 
   import Styler.Style, only: [displace_comments: 2, shift_comments: 3]
 
-  alias Styler.Style
-
   @code """
   # Above module
   defmodule Foo do
@@ -35,7 +33,7 @@ defmodule Styler.StyleTest do
   # After module
   """
 
-  @comments @code |> Styler.string_to_quoted_with_comments() |> elem(1)
+  @comments @code |> Styler.string_to_ast() |> elem(1)
 
   describe "displace_comments/2" do
     test "Doesn't lose any comments" do
@@ -115,18 +113,6 @@ defmodule Styler.StyleTest do
       for {text, line} <- expected do
         assert line == Enum.find(new_comments, &(&1.text == text)).line
       end
-    end
-  end
-
-  describe "fix_line_numbers" do
-    test "returns ast list with increasing line numbers" do
-      nodes = for n <- [1, 2, 999, 1000, 5, 6], do: {:node, [line: n], [n]}
-      fixed = Style.fix_line_numbers(nodes, 7)
-
-      Enum.scan(fixed, fn {_, [line: this_line], _} = this_node, {_, [line: previous_line], _} ->
-        assert this_line >= previous_line
-        this_node
-      end)
     end
   end
 end

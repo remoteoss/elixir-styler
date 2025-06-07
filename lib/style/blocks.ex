@@ -17,16 +17,18 @@ defmodule Styler.Style.Blocks do
   * Credo.Check.Consistency.ParameterPatternMatching
   * Credo.Check.Readability.LargeNumbers
   * Credo.Check.Readability.ParenthesesOnZeroArityDefs
+  * Credo.Check.Readability.PreferImplicitTry
   * Credo.Check.Readability.WithSingleClause
+  * Credo.Check.Refactor.CaseTrivialMatches
   * Credo.Check.Refactor.CondStatements
   * Credo.Check.Refactor.RedundantWithClauseResult
   * Credo.Check.Refactor.WithClauses
   """
 
+  @behaviour Styler.Style
+
   alias Styler.Style
   alias Styler.Zipper
-
-  @behaviour Styler.Style
 
   defguardp is_negator(n) when elem(n, 0) in [:!, :not, :!=, :!==]
 
@@ -51,10 +53,31 @@ defmodule Styler.Style.Blocks do
   # to `case single_statement do success -> body; ...elses end`
   def run({{:with, m, [{:<-, am, [success, single_statement]}, [body, elses]]}, zm}, ctx) do
     {{:__block__, do_meta, [:do]}, body} = body
-    {{:__block__, _else_meta, [:else]}, elses} = elses
+    {{:__block__, _, [:else]}, elses} = elses
+
+    elses =
+      case elses do
+        # unwrap a stab ala `, else: (_ -> :ok)`. these became literals in 1.17
+        {:__block__, _, [[{:->, _, _}] = stab]} -> stab
+        elses -> elses
+      end
+
+    # drops keyword formatting etc
+    do_meta = [line: do_meta[:line]]
     clauses = [{{:__block__, am, [:do]}, [{:->, do_meta, [[success], body]} | elses]}]
+    end_line = Style.max_line(elses) + 1
+
+    # fun fact: i added the detailed meta just because i noticed it was missing while debugging something ...
+    # ... and it fixed the bug 🤷
+    case_meta = [
+      end_of_expression: [newlines: 1, line: end_line],
+      do: do_meta,
+      end: [line: end_line],
+      line: m[:line]
+    ]
+
     # recurse in case this new case should be rewritten to a `if`, etc
-    run({{:case, m, [single_statement, clauses]}, zm}, ctx)
+    run({{:case, case_meta, [single_statement, clauses]}, zm}, ctx)
   end
 
   # `with true <- x, do: bar` =>`if x, do: bar`
@@ -74,103 +97,27 @@ defmodule Styler.Style.Blocks do
   end
 
   # Credo.Check.Refactor.WithClauses
-  def run({{:with, with_meta, children}, _} = zipper, ctx) when is_list(children) do
-    # a std lib `with` block will have at least one left arrow and a `do` body. anything else we skip ¯\_(ツ)_/¯
-    arrow_or_match? = &(left_arrow?(&1) || match?({:=, _, _}, &1))
-    do_block? = &match?([{{:__block__, _, [:do]}, _body} | _], &1)
+  def run({{:with, _, children}, _} = zipper, ctx) when is_list(children) do
+    do_block? = Enum.any?(children, &Style.do_block?/1)
+    arrow_or_match? = Enum.any?(children, &(left_arrow?(&1) || match?({:=, _, _}, &1)))
 
-    if Enum.any?(children, arrow_or_match?) and Enum.any?(children, do_block?) do
-      {preroll, children} =
-        children
-        |> Enum.map(fn
-          # `_ <- rhs` => `rhs`
-          {:<-, _, [{:_, _, _}, rhs]} -> rhs
-          # `lhs <- rhs` => `lhs = rhs`
-          {:<-, m, [{atom, _, nil} = lhs, rhs]} when is_atom(atom) -> {:=, m, [lhs, rhs]}
-          child -> child
-        end)
-        |> Enum.split_while(&(not left_arrow?(&1)))
+    cond do
+      # we can style this!
+      do_block? and arrow_or_match? ->
+        style_with_statement(zipper, ctx)
 
-      # after rewriting `x <- y()` to `x = y()` there are no more arrows.
-      # this never should've been a with statement at all! we can just replace it with assignments
-      if Enum.empty?(children) do
-        {:cont, replace_with_statement(zipper, preroll), ctx}
-      else
-        [[{{_, do_meta, _} = do_block, do_body} | elses] | reversed_clauses] = Enum.reverse(children)
-        {postroll, reversed_clauses} = Enum.split_while(reversed_clauses, &(not left_arrow?(&1)))
-        [{:<-, final_clause_meta, [lhs, rhs]} = _final_clause | rest] = reversed_clauses
+      # `with (head_statements) do: x (else ...)`
+      do_block? ->
+        # head statements can be the empty list, if it matters
+        {head_statements, [[{{:__block__, _, [:do]}, body} | _]]} = Enum.split_while(children, &(not Style.do_block?(&1)))
+        [first | rest] = head_statements ++ [body]
+        # replace this `with` statement with its headers + body
+        zipper = zipper |> Zipper.replace(first) |> Zipper.insert_siblings(rest)
+        {:cont, zipper, ctx}
 
-        # drop singleton identity else clauses like `else foo -> foo end`
-        elses =
-          case elses do
-            [{{_, _, [:else]}, [{:->, _, [[left], right]}]}] -> if nodes_equivalent?(left, right), do: [], else: elses
-            _ -> elses
-          end
-
-        {reversed_clauses, do_body} =
-          cond do
-            # Put the postroll into the body
-            Enum.any?(postroll) ->
-              {node, do_body_meta, do_children} = do_body
-              do_children = if node == :__block__, do: do_children, else: [do_body]
-              do_body = {:__block__, Keyword.take(do_body_meta, [:line]), Enum.reverse(postroll, do_children)}
-              {reversed_clauses, do_body}
-
-            # Credo.Check.Refactor.RedundantWithClauseResult
-            Enum.empty?(elses) and nodes_equivalent?(lhs, do_body) ->
-              {rest, rhs}
-
-            # no change
-            true ->
-              {reversed_clauses, do_body}
-          end
-
-        do_line = do_meta[:line]
-        final_clause_line = final_clause_meta[:line]
-
-        do_line =
-          cond do
-            do_meta[:format] == :keyword && final_clause_line + 1 >= do_line -> do_line
-            do_meta[:format] == :keyword -> final_clause_line + 1
-            true -> final_clause_line
-          end
-
-        do_block = Macro.update_meta(do_block, &Keyword.put(&1, :line, do_line))
-        # disable keyword `, do:` since there will be multiple statements in the body
-        with_meta =
-          if Enum.any?(postroll),
-            do: Keyword.merge(with_meta, do: [line: with_meta[:line]], end: [line: Style.max_line(children) + 1]),
-            else: with_meta
-
-        with_children = Enum.reverse(reversed_clauses, [[{do_block, do_body} | elses]])
-        zipper = Zipper.replace(zipper, {:with, with_meta, with_children})
-
-        cond do
-          # oops! RedundantWithClauseResult removed the final arrow in this. no more need for a with statement!
-          Enum.empty?(reversed_clauses) ->
-            {:cont, replace_with_statement(zipper, preroll ++ with_children), ctx}
-
-          # recurse if the # of `<-` have changed (this `with` could now be eligible for a `case` rewrite)
-          Enum.any?(preroll) ->
-            # put the preroll before the with statement in either a block we create or the existing parent block
-            zipper
-            |> Style.find_nearest_block()
-            |> Zipper.prepend_siblings(preroll)
-            |> run(ctx)
-
-          # the # of `<-` canged, so we should have another look at this with statement
-          Enum.any?(postroll) ->
-            run(zipper, ctx)
-
-          true ->
-            # of clauess didn't change, so don't reecurse or we'll loop FOREEEVEERR
-            {:cont, zipper, ctx}
-        end
-      end
-    else
-      # maybe this isn't a with statement - could be a function named `with`
-      # or it's just a with statement with no arrows, but that's too saddening to imagine
-      {:cont, zipper, ctx}
+      # maybe this isn't a with statement - could be a function named `with` or something.
+      true ->
+        {:cont, zipper, ctx}
     end
   end
 
@@ -196,6 +143,10 @@ defmodule Styler.Style.Blocks do
       [head, [do_block, {_, {:__block__, _, []}}]] ->
         {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
 
+      # drop `else: nil`
+      [head, [do_block, {_, {:__block__, _, [nil]}}]] ->
+        {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
+
       [head, [do_, else_]] ->
         if Style.max_line(do_) > Style.max_line(else_) do
           # we inverted the if/else blocks of this `if` statement in a previous pass (due to negators or unless)
@@ -211,6 +162,99 @@ defmodule Styler.Style.Blocks do
   end
 
   def run(zipper, ctx), do: {:cont, zipper, ctx}
+
+  # with statements can do _a lot_, so this beast of a function likewise does a lot.
+  defp style_with_statement({{:with, with_meta, children}, _} = zipper, ctx) do
+    {preroll, children} =
+      children
+      |> Enum.map(fn
+        # `_ <- rhs` => `rhs`
+        {:<-, _, [{:_, _, _}, rhs]} -> rhs
+        # `lhs <- rhs` => `lhs = rhs`
+        {:<-, m, [{atom, _, nil} = lhs, rhs]} when is_atom(atom) -> {:=, m, [lhs, rhs]}
+        child -> child
+      end)
+      |> Enum.split_while(&(not left_arrow?(&1)))
+
+    # after rewriting `x <- y()` to `x = y()` there are no more arrows.
+    # this never should've been a with statement at all! we can just replace it with assignments
+    if Enum.empty?(children) do
+      {:cont, replace_with_statement(zipper, preroll), ctx}
+    else
+      [[{{_, do_meta, _} = do_block, do_body} | elses] | reversed_clauses] = Enum.reverse(children)
+      {postroll, reversed_clauses} = Enum.split_while(reversed_clauses, &(not left_arrow?(&1)))
+      [{:<-, final_clause_meta, [lhs, rhs]} = _final_clause | rest] = reversed_clauses
+
+      # drop singleton identity else clauses like `else foo -> foo end`
+      elses =
+        with [{{_, _, [:else]}, [{:->, _, [[left], right]}]}] <- elses,
+             true <- nodes_equivalent?(left, right),
+             do: [],
+             else: (_ -> elses)
+
+      # Remove Redundant body
+      {postroll, reversed_clauses, do_body} =
+        if Enum.empty?(postroll) and Enum.empty?(elses) and nodes_equivalent?(lhs, do_body) do
+          # removing redundant RHS can expose more non-arrows behind it, so repeat our postroll process
+          {postroll, reversed_clauses} = Enum.split_while(rest, &(not left_arrow?(&1)))
+          {postroll, reversed_clauses, rhs}
+        else
+          {postroll, reversed_clauses, do_body}
+        end
+
+      # Put the postroll into the body
+      {reversed_clauses, do_body} =
+        if Enum.any?(postroll) do
+          {node, do_body_meta, do_children} = do_body
+          do_children = if node == :__block__, do: do_children, else: [do_body]
+          do_body = {:__block__, Keyword.take(do_body_meta, [:line]), Enum.reverse(postroll, do_children)}
+          {reversed_clauses, do_body}
+        else
+          {reversed_clauses, do_body}
+        end
+
+      final_clause_line = final_clause_meta[:line]
+
+      do_line =
+        cond do
+          do_meta[:format] == :keyword && final_clause_line + 1 >= do_meta[:line] -> do_meta[:line]
+          do_meta[:format] == :keyword -> final_clause_line + 1
+          true -> final_clause_line
+        end
+
+      do_block = Macro.update_meta(do_block, &Keyword.put(&1, :line, do_line))
+      # disable keyword `, do:` since there will be multiple statements in the body
+      with_meta =
+        if Enum.any?(postroll),
+          do: Keyword.merge(with_meta, do: [line: with_meta[:line]], end: [line: Style.max_line(children) + 1]),
+          else: with_meta
+
+      with_children = Enum.reverse(reversed_clauses, [[{do_block, do_body} | elses]])
+      zipper = Zipper.replace(zipper, {:with, with_meta, with_children})
+
+      cond do
+        # oops! RedundantWithClauseResult removed the final arrow in this. no more need for a with statement!
+        Enum.empty?(reversed_clauses) ->
+          {:cont, replace_with_statement(zipper, preroll ++ with_children), ctx}
+
+        # recurse if the # of `<-` have changed (this `with` could now be eligible for a `case` rewrite)
+        Enum.any?(preroll) ->
+          # put the preroll before the with statement in either a block we create or the existing parent block
+          zipper
+          |> Style.find_nearest_block()
+          |> Zipper.prepend_siblings(preroll)
+          |> run(ctx)
+
+        # the # of `<-` changed, so we should have another look at this with statement
+        Enum.any?(postroll) ->
+          run(zipper, ctx)
+
+        true ->
+          # of clauses didn't change, so don't reecurse or we'll loop FOREEEVEERR
+          {:cont, zipper, ctx}
+      end
+    end
+  end
 
   # `with a <- b(), c <- d(), do: :ok, else: (_ -> :error)`
   # =>
