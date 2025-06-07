@@ -25,10 +25,10 @@ defmodule Styler.Style.Blocks do
   * Credo.Check.Refactor.WithClauses
   """
 
-  @behaviour Styler.Style
-
   alias Styler.Style
   alias Styler.Zipper
+
+  @behaviour Styler.Style
 
   defguardp is_negator(n) when elem(n, 0) in [:!, :not, :!=, :!==]
 
@@ -144,8 +144,8 @@ defmodule Styler.Style.Blocks do
         {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
 
       # drop `else: nil`
-      [head, [do_block, {_, {:__block__, _, [nil]}}]] ->
-        {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
+      # [head, [do_block, {_, {:__block__, _, [nil]}}]] ->
+      #   {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
 
       [head, [do_, else_]] ->
         if Style.max_line(do_) > Style.max_line(else_) do

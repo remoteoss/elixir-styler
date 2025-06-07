@@ -70,7 +70,7 @@ defmodule StylerTest.ZipperTest do
                {1, {[], {{:foo, [], [1, 2]}, nil}, [2]}}
 
       assert {{:., [], [:a, :b]}, [], [1, 2]} |> Zipper.zip() |> Zipper.down() ==
-               {{:., [], [:a, :b]}, {[],{{{:., [], [:a, :b]}, [], [1, 2]}, nil}, [1, 2]}}
+               {{:., [], [:a, :b]}, {[], {{{:., [], [:a, :b]}, [], [1, 2]}, nil}, [1, 2]}}
     end
   end
 

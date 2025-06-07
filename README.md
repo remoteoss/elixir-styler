@@ -123,7 +123,6 @@ Other ways Styler can change your program:
 - [config file sorting](https://hexdocs.pm/styler/mix_configs.html#this-can-break-your-program)
 - and likely other ways. stay safe out there!
 
->>>>>>> upstream/main
 ## Thanks & Inspiration
 
 ### [Sourceror](https://github.com/doorgan/sourceror/)

@@ -178,7 +178,7 @@ defmodule Styler.Zipper do
   """
   @spec prepend_siblings(zipper, [tree]) :: zipper
   def prepend_siblings({node, nil}, siblings), do: {:__block__, [], siblings ++ [node]} |> zip() |> down() |> rightmost()
-  def prepend_siblings({tree, {l, p, r}}, siblings), do: {tree, {Enum.reverse(siblings, l), p , r}}
+  def prepend_siblings({tree, {l, p, r}}, siblings), do: {tree, {Enum.reverse(siblings, l), p, r}}
 
   @doc """
   Inserts the item as the right sibling of the node at this zipper, without

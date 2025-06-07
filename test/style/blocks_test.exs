@@ -734,12 +734,14 @@ defmodule Styler.Style.BlocksTest do
   end
 
   describe "if" do
-    test "drops else nil" do
-      assert_style("if a, do: b, else: nil", "if a, do: b")
+    test "keeps else nil" do
+      assert_style("if a, do: b, else: nil", "if a, do: b, else: nil")
 
       assert_style("if a do b else nil end", """
       if a do
         b
+      else
+        nil
       end
       """)
 
