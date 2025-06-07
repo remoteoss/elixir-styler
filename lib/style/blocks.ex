@@ -143,6 +143,8 @@ defmodule Styler.Style.Blocks do
       [head, [do_block, {_, {:__block__, _, []}}]] ->
         {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
 
+      # We like keeping `else: nil` even if it's the same effect due to the explicitness.
+      #
       # drop `else: nil`
       # [head, [do_block, {_, {:__block__, _, [nil]}}]] ->
       #   {:cont, Zipper.replace(zipper, {:if, m, [head, [do_block]]}), ctx}
