@@ -15,10 +15,10 @@ defmodule Styler.Style.CommentDirectives do
   `# styler:sort` maintains sorting of wordlists (by string comparison) and lists (string comparison of code representation)
   """
 
-  @behaviour Styler.Style
-
   alias Styler.Style
   alias Styler.Zipper
+
+  @behaviour Styler.Style
 
   def run(zipper, ctx) do
     {zipper, comments} =

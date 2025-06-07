@@ -10,6 +10,7 @@
 
 defmodule Styler.Style.CommentDirectivesTest do
   @moduledoc false
+
   use Styler.StyleCase, async: true
 
   describe "sort" do
