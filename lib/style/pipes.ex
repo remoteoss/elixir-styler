@@ -241,19 +241,13 @@ defmodule Styler.Style.Pipes do
     else
       # looks like it's just a normal function, so lift the first arg up into a new pipe
       # `foo(a, ...) |> ...` => `a |> foo(...) |> ...`
+      #
+      # If the first arg is a syntax-sugared kwl, we need to manually desugar it
       arg =
-        case arg do
-          # If the first arg is a syntax-sugared kwl, we need to manually desugar it to cover all scenarios
-          [{{:__block__, bm, _}, {:__block__, _, _}} | _] ->
-            if bm[:format] == :keyword do
-              {:__block__, [line: line, closing: [line: line]], [arg]}
-            else
-              arg
-            end
-
-          arg ->
-            arg
-        end
+        with [{{:__block__, bm, _}, _} | _] <- arg,
+             :keyword <- bm[:format],
+             do: {:__block__, [line: line, closing: [line: line]], [arg]},
+             else: (_ -> arg)
 
       {{:|>, [line: line], [arg, {fun, meta, args}]}, nil}
     end
@@ -300,6 +294,34 @@ defmodule Styler.Style.Pipes do
   defp fix_pipe({:|>, m, [lhs, {{:., m2, [{anon_fun, _, _}] = fun}, _, []}]}) when anon_fun in [:&, :fn],
     do: {:|>, m, [lhs, {:then, m2, fun}]}
 
+  # `lhs |> Enum.sort([:asc, :desc]) |> Enum.reverse()` => `lhs |> Enum.sort(:desc | :asc)`
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :sort]} = sort, meta, sort_args},
+           {{:., _, [{_, _, [:Enum]}, :reverse]}, _, []}
+         ) = node
+       ) do
+    case sort_args do
+      [] -> {:|>, pm, [lhs, {sort, meta, [{:__block__, [line: meta[:line]], [:desc]}]}]}
+      [{_, m, [:desc]}] -> {:|>, pm, [lhs, {sort, meta, [{:__block__, m, [:asc]}]}]}
+      [{_, m, [:asc]}] -> {:|>, pm, [lhs, {sort, meta, [{:__block__, m, [:desc]}]}]}
+      _ -> node
+    end
+  end
+
+  # `lhs |> Enum.map(fun) |> Enum.intersperse(sep)` => `lhs |> Enum.map_intersperse(sep, fun)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., dm, [{_, _, [:Enum]} = enum, :map]}, em, [fun]},
+           {{:., _, [{_, _, [:Enum]}, :intersperse]}, _, [sep]}
+         )
+       ),
+       do: {:|>, pm, [lhs, {{:., dm, [enum, :map_intersperse]}, em, [Style.set_line(sep, em[:line]), fun]}]}
+
   # `lhs |> Enum.reverse() |> Enum.concat(enum)` => `lhs |> Enum.reverse(enum)`
   defp fix_pipe(
          pipe_chain(
@@ -308,9 +330,19 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [:Enum]}, :reverse]} = reverse, meta, []},
            {{:., _, [{_, _, [:Enum]}, :concat]}, _, [enum]}
          )
-       ) do
-    {:|>, pm, [lhs, {reverse, [line: meta[:line]], [enum]}]}
-  end
+       ),
+       do: {:|>, pm, [lhs, {reverse, meta, [enum]}]}
+
+  # `lhs |> Enum.filter(fun) |> List.first([default])` => `lhs |> Enum.find([default], fun)`
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., dm, [{_, _, [:Enum]} = enum, :filter]}, meta, [fun]},
+           {{:., _, [{_, _, [:List]}, :first]}, _, default}
+         )
+       ),
+       do: {:|>, pm, [lhs, {{:., dm, [enum, :find]}, meta, Style.set_line(default, meta[:line]) ++ [fun]}]}
 
   # `lhs |> Enum.reverse() |> Kernel.++(enum)` => `lhs |> Enum.reverse(enum)`
   defp fix_pipe(
@@ -320,9 +352,8 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [:Enum]}, :reverse]} = reverse, meta, []},
            {{:., _, [{_, _, [:Kernel]}, :++]}, _, [enum]}
          )
-       ) do
-    {:|>, pm, [lhs, {reverse, [line: meta[:line]], [enum]}]}
-  end
+       ),
+       do: {:|>, pm, [lhs, {reverse, meta, [enum]}]}
 
   # `lhs |> Enum.filter(filterer) |> Enum.count()` => `lhs |> Enum.count(count)`
   defp fix_pipe(
@@ -333,9 +364,8 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [:Enum]}, :count]} = count, _, []}
          )
        )
-       when mod in @enum do
-    {:|>, pm, [lhs, {count, [line: meta[:line]], [filterer]}]}
-  end
+       when mod in @enum,
+       do: {:|>, pm, [lhs, {count, meta, [filterer]}]}
 
   # `lhs |> Stream.map(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
   # `lhs |> Stream.each(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
@@ -347,9 +377,8 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [:Stream]}, :run]}, _, []}
          )
        )
-       when map_or_each in [:map, :each] do
-    {:|>, pm, [lhs, {{:., dm, [{a, am, [:Enum]}, :each]}, fm, fa}]}
-  end
+       when map_or_each in [:map, :each],
+       do: {:|>, pm, [lhs, {{:., dm, [{a, am, [:Enum]}, :each]}, fm, fa}]}
 
   # `lhs |> Enum.map(mapper) |> Enum.join(joiner)` => `lhs |> Enum.map_join(joiner, mapper)`
   defp fix_pipe(
@@ -360,10 +389,8 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [:Enum]} = enum, :join]}, _, join_args}
          )
        )
-       when mod in @enum do
-    rhs = {{:., dm, [enum, :map_join]}, em, Style.set_line(join_args, dm[:line]) ++ map_args}
-    {:|>, pm, [lhs, rhs]}
-  end
+       when mod in @enum,
+       do: {:|>, pm, [lhs, {{:., dm, [enum, :map_join]}, em, Style.set_line(join_args, dm[:line]) ++ map_args}]}
 
   # `lhs |> Enum.map(mapper) |> Enum.into(empty_map)` => `lhs |> Map.new(mapper)`
   # or
@@ -402,9 +429,30 @@ defmodule Styler.Style.Pipes do
            {{:., _, [{_, _, [mod]}, :new]} = new, _, []}
          )
        )
-       when mod in @collectable and enum in @enum do
-    {:|>, pm, [lhs, {Style.set_line(new, em[:line]), em, [mapper]}]}
-  end
+       when mod in @collectable and enum in @enum,
+       do: {:|>, pm, [lhs, {Style.set_line(new, em[:line]), em, [mapper]}]}
+
+  @req2 for fun <- ~w(delete get head patch post put request run), bang <- ["", "!"], do: :"#{fun}#{bang}"
+
+  # rewrite `Keyword.merge(opt) |> Req.fun1()` to `Req.fun2(opt)` for 2 arity functions that take `opts` as a second arg
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [req_or_kw]}, :merge]}, m, [kw]},
+           {{:., _, [{_, _, [:Req]}, fun]} = req, _, []}
+         )
+       )
+       when req_or_kw in [:Req, :Keyword] and fun in @req2,
+       do: fix_pipe({:|>, pm, [lhs, {req, m, [kw]}]})
+
+  # Req.new |> Req.fun1,2 -> Req.fun1,2
+  # all `fun` options take the same args as `Req.new`, so it's redundant to call Req.new before them
+  defp fix_pipe(
+         pipe_chain(pm, lhs, {{:., _, [{_, _, [:Req]}, :new]}, m, []}, {{:., _, [{_, _, [:Req]}, fun]} = req, _, args})
+       )
+       when fun in @req2,
+       do: {:|>, pm, [lhs, {req, m, args}]}
 
   defp fix_pipe(node), do: node
 

@@ -46,7 +46,9 @@ case some_http_call() do
 end
 ```
 
-## `if` and `unless`
+---------------------------------
+
+## `if`/`unless`
 
 Styler removes `else: nil` clauses:
 
@@ -130,7 +132,31 @@ end
 
 ## `cond`
 
-Styler has only one `cond` statement rewrite: replace 2-clause statements with `if` statements.
+Styler enforces the use of `true` as the final clause of a cond statement when it's equivalent.
+
+```elixir
+# before
+cond do
+  a -> b
+  c -> d
+  :else -> e
+end
+# styled
+cond do
+  a -> b
+  c -> d
+  true -> e
+end
+
+# This is left unchanged
+cond do
+  a -> b
+  c -> d
+  foo -> e
+end
+```
+
+Styler also replaces 2-clause cond statements with `if` statements when possible
 
 ```elixir
 # Given
@@ -143,6 +169,12 @@ if a do
   b
 else
   c
+end
+
+# This is left unchanged, as its behaviour of raising if `foo` is falsey is assumed to be intentional
+cond do
+  a -> b
+  foo -> c
 end
 ```
 

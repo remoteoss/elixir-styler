@@ -138,7 +138,6 @@ defmodule Styler.Style.DeprecationsTest do
 
   describe "1.17+" do
     @describetag skip: Version.match?(System.version(), "< 1.17.0-dev")
-
     test "to_timeout/1 vs :timer.units(x)" do
       assert_style ":timer.hours(x)", "to_timeout(hour: x)"
       assert_style ":timer.minutes(x)", "to_timeout(minute: x)"
@@ -151,6 +150,11 @@ defmodule Styler.Style.DeprecationsTest do
 
     test "combined with to_timeout improvements" do
       assert_style ":timer.minutes(60 * 4)", "to_timeout(hour: 4)"
+    end
+
+    test "regression: doesn't touch other timer functions" do
+      assert_style ":timer.sleep(1000)"
+      assert_style ":timer.tc(fn -> :ok end)"
     end
   end
 end

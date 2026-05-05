@@ -43,10 +43,63 @@ defmodule Styler.Style.Blocks do
   #   end
   # end
 
-  # Credo.Check.Refactor.CondStatements
-  def run({{:cond, _, [[{_, [{:->, _, [[head], a]}, {:->, _, [[{:__block__, _, [truthy]}], b]}]}]]}, _} = zipper, ctx)
-      when is_atom(truthy) and truthy not in [nil, false],
-      do: if_ast(zipper, head, a, b, ctx)
+  # case statements with 1 clause: thanks 🤖!
+  #
+  # ideally rewrite to use `=`, but can't do that when there's a `when` clause
+  def run({{:case, _, [_, [{_, [{:->, _, [[{:when, _, _} | _] | _]}]}]]}, _} = zipper, ctx), do: {:cont, zipper, ctx}
+  #
+  def run({{:case, m, [head, [{_, [{:->, _, [[lhs], rhs]}]}]]}, _} = zipper, ctx) do
+    rhs =
+      case rhs do
+        {:__block__, _, children} -> children
+        node -> [node]
+      end
+
+    zipper =
+      case Zipper.up(zipper) do
+        {{:=, am, [parent_lhs, _case_statement_rhs]}, _} = zipper ->
+          # this was a `x = case head, do: (lhs -> rhs)`. make it `x = lhs = head; x = rhs`
+          meta = [line: am[:line]]
+          # change the if there are multiple clauses in the case, have the final one be the new rhs of parent_lhs
+          # the meta for the final equality has an incorrect line, but it shouldn't mess with comments so leaving it be
+          siblings = List.update_at(rhs, -1, &{:=, meta, [parent_lhs, &1]})
+
+          zipper
+          |> Zipper.replace({:=, meta, [lhs, head]})
+          |> Zipper.insert_siblings(siblings)
+
+        _ ->
+          zipper
+          |> Style.find_nearest_block()
+          |> Zipper.replace({:=, [line: m[:line]], [lhs, head]})
+          |> Zipper.insert_siblings(rhs)
+      end
+
+    {:cont, zipper, ctx}
+  end
+
+  def run({{:cond, _, [[{do_, clauses}]]}, _} = zipper, ctx) do
+    # ensure all final `atom -> final_clause` use `true` for consistency.
+    # `:else` is cute but consistency is all.
+    rewrite_literal_to_true = fn
+      {:->, am, [[{:__block__, bm, [truthy]}], body]} when truthy not in [nil, false] ->
+        {:->, am, [[{:__block__, bm, [true]}], body]}
+
+      # Surely this never happens buuuuut?
+      # %{} ->; {} ->
+      {:->, am, [[{literal, bm, _}], body]} when literal in [:{}, :%{}] ->
+        {:->, am, [[{:__block__, bm, [true]}], body]}
+
+      other ->
+        other
+    end
+
+    case List.update_at(clauses, -1, rewrite_literal_to_true) do
+      # # Credo.Check.Refactor.CondStatements
+      [{:->, _, [[head], a]}, {:->, _, [[{:__block__, _, [true]}], b]}] -> if_ast(zipper, head, a, b, ctx)
+      clauses -> {:cont, Zipper.replace_children(zipper, [[{do_, clauses}]]), ctx}
+    end
+  end
 
   # Credo.Check.Readability.WithSingleClause
   # rewrite `with success <- single_statement do body else ...elses end`

@@ -33,7 +33,7 @@ defmodule Styler do
   @doc false
   def style({ast, comments}, file, opts) do
     on_error = opts[:on_error] || :log
-    Styler.Config.set(opts)
+    Styler.Config.initialize(opts)
     zipper = Zipper.zip(ast)
 
     {{ast, _}, comments} =
@@ -76,8 +76,7 @@ defmodule Styler do
     ast_to_string(ast, comments, formatter_opts)
   end
 
-  @doc false
-  # Wrap `Code.string_to_quoted_with_comments` with our desired options
+  @doc "Just `Code.string_to_quoted_with_comments/2` with the necessary options"
   def string_to_ast(code, file \\ "nofile") when is_binary(code) do
     Code.string_to_quoted_with_comments!(code,
       literal_encoder: &__MODULE__.literal_encoder/2,

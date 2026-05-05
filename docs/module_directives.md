@@ -1,38 +1,3 @@
-## Adds Moduledoc
-
-Adds `@moduledoc false` to modules without a moduledoc unless the module's name ends with one of the following:
-
-* `Test`
-* `Mixfile`
-* `MixProject`
-* `Controller`
-* `Endpoint`
-* `Repo`
-* `Router`
-* `Socket`
-* `View`
-* `HTML`
-* `JSON`
-
-## Directive Expansion
-
-Expands `Module.{SubmoduleA, SubmoduleB}` to their explicit forms for ease of searching.
-
-```elixir
-# Before
-import Foo.{Bar, Baz, Bop}
-alias Foo.{Bar, Baz.A, Bop}
-
-# After
-import Foo.Bar
-import Foo.Baz
-import Foo.Bop
-
-alias Foo.Bar
-alias Foo.Baz.A
-alias Foo.Bop
-```
-
 ## Directive Organization
 
 Modules directives are sorted into the following order:
@@ -147,6 +112,29 @@ import Foo.Bar
 alias Foo.Bar
 ```
 
+## Directive Expansion
+
+Expands `Module.{SubmoduleA, SubmoduleB}` to their explicit forms for ease of searching.
+
+```elixir
+# Before
+import Foo.{Bar, Baz, Bop}
+alias Foo.{Bar, Baz.A, Bop}
+
+# After
+import Foo.Bar
+import Foo.Baz
+import Foo.Bop
+
+alias Foo.Bar
+alias Foo.Baz.A
+alias Foo.Bop
+```
+
+## Remove Unnecessary / Basic Aliases
+
+Styler removes root node or single aliases like `alias Foo`, as they accomplish nothing.
+
 ## Alias Lifting
 
 When a module with three parts is referenced two or more times, styler creates a new alias for that module and uses it.
@@ -194,3 +182,54 @@ You can specify additional modules to exclude from lifting via the `:alias_lifti
   styler: [alias_lifting_exclude: [:C]],
 ]
 ```
+
+## Alias Application
+
+Styler applies aliases in those cases where a developer wrote out a full module name without realizing that the module is already aliased.
+
+```elixir
+# Given
+alias A.B
+alias A.B.C
+alias A.B.C.D, as: X
+
+A.B.foo()
+A.B.C.foo()
+A.B.C.D.woo()
+C.D.woo()
+
+# Styled
+alias A.B
+alias A.B.C
+alias A.B.C.D, as: X
+
+B.foo()
+C.foo()
+X.woo()
+X.woo()
+```
+
+## Adds `@moduledoc false`
+
+Adds `@moduledoc false` to modules without a moduledoc.
+
+Styler does this for two reasons:
+
+1. Its appearance during code review is a reminder to the author and reviewer that they may want to document the module. This can otherwise be easily forgotten.
+2. To normalize the use of `@moduledoc false`, because it's preferable to docstrings which convey no actual information.
+
+    For example: `@moduledoc "The module for functions for interacting with Widgets"` in the `Widget` module is crueler code to have written than just `@moduledoc false`, because including a string gave the reader hope that the author was going to help them comprehend the module. That false hope causes more harm than just saying "Sorry, you're on your own." (aka `@moduledoc false`)
+
+In conformance with the precedent set by Credo, this `@moduledoc` is not added if the module's name ends with any of the following:
+
+* `Test`
+* `Mixfile`
+* `MixProject`
+* `Controller`
+* `Endpoint`
+* `Repo`
+* `Router`
+* `Socket`
+* `View`
+* `HTML`
+* `JSON`

@@ -11,7 +11,149 @@
 defmodule Styler.Style.BlocksTest do
   use Styler.StyleCase, async: true
 
-  describe "with statements" do
+  describe "case statements with a single clause" do
+    test "noop for when" do
+      assert_style """
+      case foo do
+        bar when is_binary(bar) -> baz(bar)
+      end
+      """
+    end
+
+    test "changes to assignment" do
+      assert_style(
+        """
+        case foo do
+          bar -> baz(bar)
+        end
+        """,
+        """
+        bar = foo
+        baz(bar)
+        """
+      )
+
+      assert_style(
+        """
+        case foo |> Bar.baz() |> Bop.boop() do
+          {:ok, widget} ->
+            x = y
+            wodget(widget)
+        end
+        """,
+        """
+        {:ok, widget} = foo |> Bar.baz() |> Bop.boop()
+        x = y
+        wodget(widget)
+        """
+      )
+    end
+
+    test "with comments" do
+      assert_style(
+        """
+        # bar
+        bar
+
+        # head
+        case foo |> Bar.baz() |> Bop.boop() do
+          # clause
+          {:ok, widget} ->
+            # body
+            x = y
+            wodget(widget)
+        end
+        """,
+        """
+        # bar
+        bar
+
+        # head
+        # clause
+        {:ok, widget} = foo |> Bar.baz() |> Bop.boop()
+        # body
+        x = y
+        wodget(widget)
+        """
+      )
+    end
+
+    test "singleton parent" do
+      assert_style(
+        """
+        if foo do
+          case complex |> head() |> stuff() do
+            {:ok, whatever} ->
+              some_body(whatever)
+          end
+        end
+        """,
+        """
+        if foo do
+          {:ok, whatever} = complex |> head() |> stuff()
+          some_body(whatever)
+        end
+        """
+      )
+    end
+
+    test "when already an assignment" do
+      assert_style(
+        """
+        preroll
+
+        assignment =
+          case head do
+            lhs -> body
+          end
+        """,
+        """
+        preroll
+
+        lhs = head
+        assignment = body
+        """
+      )
+
+      assert_style(
+        """
+        # assignmet
+        assignment =
+          # case head
+          case head do
+            # lhs
+            lhs ->
+              # body
+              body
+              # clauses
+              fn ->
+                look
+                im(a)
+                # big function
+                big function
+              end
+          end
+        """,
+        """
+        # assignmet
+        # case head
+        # lhs
+        lhs = head
+        # body
+        body
+        # clauses
+        assignment = fn ->
+          look
+          im(a)
+          # big function
+          big(function)
+        end
+        """
+      )
+    end
+  end
+
+  describe "with" do
     test "replacement due to no (or all removed) arrows" do
       assert_style(
         """
@@ -577,41 +719,98 @@ defmodule Styler.Style.BlocksTest do
     end
   end
 
-  test "Credo.Check.Refactor.CondStatements" do
-    for truthy <- ~w(true :atom :else) do
-      assert_style(
-        """
+  describe "cond" do
+    test "rewrite some two-clause conds as an if statement" do
+      for truthy <- ~w(true :atom :else) do
+        assert_style(
+          """
+          cond do
+            a -> b
+            #{truthy} -> c
+          end
+          """,
+          """
+          if a do
+            b
+          else
+            c
+          end
+          """
+        )
+      end
+
+      for falsey <- ~w(false nil) do
+        assert_style("""
         cond do
           a -> b
-          #{truthy} -> c
+          #{falsey} -> c
         end
-        """,
-        """
-        if a do
-          b
-        else
-          c
+        """)
+      end
+
+      for ignored <- ["x == y", "foo", "foo()", "foo(b)", "Module.foo(x)"] do
+        assert_style("""
+        cond do
+          a -> b
+          #{ignored} -> c
         end
-        """
-      )
+        """)
+      end
     end
 
-    for falsey <- ~w(false nil) do
-      assert_style("""
+    test "if final clause is an atom or truthy value, change the clause to `true`" do
+      assert_style """
       cond do
         a -> b
-        #{falsey} -> c
+        c -> d
+        true -> woo
       end
-      """)
-    end
+      """
 
-    for ignored <- ["x == y", "foo", "foo()", "foo(b)", "Module.foo(x)", ~s("else"), "%{}", "{}"] do
-      assert_style("""
+      assert_style """
       cond do
         a -> b
-        #{ignored} -> c
+        c -> d
+        call() -> woo
       end
-      """)
+      """
+
+      for truthy <- [~s("else"), ":else", "%{}", "{}"] do
+        assert_style(
+          """
+          cond do
+            a -> b
+            c -> d
+            #{truthy} -> woo
+          end
+          """,
+          """
+          cond do
+            a -> b
+            c -> d
+            true -> woo
+          end
+          """
+        )
+      end
+
+      for truthy <- [~s("else"), ":else", "%{}", "{}"] do
+        assert_style(
+          """
+          cond do
+            a -> b
+            #{truthy} -> woo
+          end
+          """,
+          """
+          if a do
+            b
+          else
+            woo
+          end
+          """
+        )
+      end
     end
   end
 
