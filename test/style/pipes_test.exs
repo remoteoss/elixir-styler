@@ -643,6 +643,59 @@ defmodule Styler.Style.PipesTest do
       )
     end
 
+    test "FilterFilter: combines two Enum.filter calls with &&" do
+      assert_style(
+        """
+        list
+        |> Enum.filter(f1)
+        |> Enum.filter(f2)
+        """,
+        """
+        Enum.filter(list, fn item -> f1.(item) && f2.(item) end)
+        """
+      )
+    end
+
+    test "FilterFilter: combines captures and inline predicates" do
+      assert_style(
+        """
+        list
+        |> Enum.filter(&String.contains?(&1, "x"))
+        |> Enum.filter(fn s -> String.contains?(s, "a") end)
+        """,
+        """
+        Enum.filter(list, fn item -> (&String.contains?(&1, "x")).(item) && (fn s -> String.contains?(s, "a") end).(item) end)
+        """
+      )
+    end
+
+    test "FilterFilter: leaves non-Enum.filter chains alone" do
+      assert_style("""
+      list
+      |> Stream.filter(f1)
+      |> Stream.filter(f2)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(f1)
+      |> Enum.filter(f2)
+      """)
+    end
+
+    test "RejectReject: combines two Enum.reject calls with ||" do
+      assert_style(
+        """
+        list
+        |> Enum.reject(f1)
+        |> Enum.reject(f2)
+        """,
+        """
+        Enum.reject(list, fn item -> f1.(item) || f2.(item) end)
+        """
+      )
+    end
+
     test "filter/count" do
       for enum <- ~w(Enum Stream) do
         assert_style(

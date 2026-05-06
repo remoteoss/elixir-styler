@@ -1058,4 +1058,134 @@ defmodule Styler.Style.BlocksTest do
       )
     end
   end
+
+  describe "RaiseInsideRescue" do
+    test "rewrites raise to reraise inside try/rescue" do
+      assert_style(
+        """
+        try do
+          foo()
+        rescue
+          e in RuntimeError -> raise e
+        end
+        """,
+        """
+        try do
+          foo()
+        rescue
+          e in RuntimeError -> reraise e, __STACKTRACE__
+        end
+        """
+      )
+    end
+
+    test "rewrites raise inside a multi-line rescue body" do
+      assert_style(
+        """
+        try do
+          foo()
+        rescue
+          e ->
+            Logger.error("oops")
+            raise e
+        end
+        """,
+        """
+        try do
+          foo()
+        rescue
+          e ->
+            Logger.error("oops")
+            reraise e, __STACKTRACE__
+        end
+        """
+      )
+    end
+
+    test "rewrites raise with multiple args" do
+      assert_style(
+        """
+        try do
+          foo()
+        rescue
+          _ -> raise ArgumentError, "bad"
+        end
+        """,
+        """
+        try do
+          foo()
+        rescue
+          _ -> reraise ArgumentError, "bad", __STACKTRACE__
+        end
+        """
+      )
+    end
+
+    test "rewrites raises inside def's rescue clause" do
+      assert_style(
+        """
+        def foo do
+          bar()
+        rescue
+          e -> raise e
+        end
+        """,
+        """
+        def foo do
+          bar()
+        rescue
+          e -> reraise e, __STACKTRACE__
+        end
+        """
+      )
+    end
+
+    test "leaves raise in the do block alone" do
+      assert_style("""
+      try do
+        raise "oops"
+      rescue
+        e -> Logger.error(e)
+      end
+      """)
+    end
+
+    test "leaves an existing reraise alone" do
+      assert_style("""
+      try do
+        foo()
+      rescue
+        e -> reraise e, __STACKTRACE__
+      end
+      """)
+    end
+
+    test "doesn't descend into a nested try" do
+      # The nested `raise` is inside the inner try's `do` block — it should be left alone
+      # (Styler will visit the inner try on its own and apply its own rewrites).
+      assert_style("""
+      try do
+        foo()
+      rescue
+        _ ->
+          try do
+            raise "inner do"
+          rescue
+            inner -> reraise inner, __STACKTRACE__
+          end
+      end
+      """)
+    end
+
+    test "doesn't descend into anonymous functions inside the rescue body" do
+      assert_style("""
+      try do
+        foo()
+      rescue
+        _ ->
+          fn -> raise "later" end
+      end
+      """)
+    end
+  end
 end

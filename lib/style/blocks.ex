@@ -23,6 +23,7 @@ defmodule Styler.Style.Blocks do
   * Credo.Check.Refactor.CondStatements
   * Credo.Check.Refactor.RedundantWithClauseResult
   * Credo.Check.Refactor.WithClauses
+  * Credo.Check.Warning.RaiseInsideRescue
   """
 
   alias Styler.Style
@@ -214,6 +215,19 @@ defmodule Styler.Style.Blocks do
       _ ->
         {:cont, zipper, ctx}
     end
+  end
+
+  # `try ... rescue clauses ... end` — within each rescue clause body, rewrite `raise foo` to
+  # `reraise foo, __STACKTRACE__` so the original stacktrace is preserved.
+  # (Credo.Check.Warning.RaiseInsideRescue)
+  def run({{:try, _, [_]} = node, meta}, ctx) do
+    {:cont, {rewrite_rescue_raises(node), meta}, ctx}
+  end
+
+  # `def fname, do: ..., rescue: clauses` — same rewrite within the rescue clauses.
+  def run({{op, _, [_head, kwlist]} = node, meta}, ctx)
+      when op in [:def, :defp, :defmacro, :defmacrop] and is_list(kwlist) do
+    {:cont, {rewrite_rescue_raises(node), meta}, ctx}
   end
 
   def run(zipper, ctx), do: {:cont, zipper, ctx}
@@ -423,4 +437,46 @@ defmodule Styler.Style.Blocks do
   defp invert({:not, _, [condition]}), do: condition
   defp invert({:in, m, [_, _]} = ast), do: {:not, m, [ast]}
   defp invert({_, m, _} = ast), do: {:!, [line: m[:line]], [ast]}
+
+  # RaiseInsideRescue helpers — rewrites raises within the rescue clauses of a try or def.
+  defp rewrite_rescue_raises({:try, m, [kwlist]}) do
+    {:try, m, [Enum.map(kwlist, &rewrite_kw_pair/1)]}
+  end
+
+  defp rewrite_rescue_raises({op, m, [head, kwlist]}) when op in [:def, :defp, :defmacro, :defmacrop] do
+    {op, m, [head, Enum.map(kwlist, &rewrite_kw_pair/1)]}
+  end
+
+  defp rewrite_rescue_raises(node), do: node
+
+  # `:rescue` keys appear under literal_encoder as {:__block__, _, [:rescue]}; bare atom is the safety net.
+  defp rewrite_kw_pair({{:__block__, _, [:rescue]} = key, clauses}), do: {key, rewrite_rescue_clauses(clauses)}
+  defp rewrite_kw_pair({:rescue, clauses}), do: {:rescue, rewrite_rescue_clauses(clauses)}
+  defp rewrite_kw_pair(other), do: other
+
+  defp rewrite_rescue_clauses(clauses) when is_list(clauses) do
+    Enum.map(clauses, fn
+      {:->, m, [match, body]} -> {:->, m, [match, rewrite_raises_in_rescue_body(body)]}
+      other -> other
+    end)
+  end
+
+  defp rewrite_rescue_clauses(other), do: other
+
+  # Walks the rescue body rewriting `raise foo` to `reraise foo, __STACKTRACE__`. Doesn't descend into
+  # nested `try`, `fn`, or nested defs — those are different rescue contexts (or none at all).
+  defp rewrite_raises_in_rescue_body(ast), do: walk_raise(ast)
+
+  defp walk_raise({:raise, m, args}) when is_list(args) and args != [] do
+    {:reraise, m, args ++ [{:__STACKTRACE__, [line: m[:line]], nil}]}
+  end
+
+  defp walk_raise({:try, _, _} = node), do: node
+  defp walk_raise({:fn, _, _} = node), do: node
+  defp walk_raise({op, _, _} = node) when op in [:def, :defp, :defmacro, :defmacrop], do: node
+
+  defp walk_raise({a, m, b}) when is_list(b), do: {walk_raise(a), m, Enum.map(b, &walk_raise/1)}
+  defp walk_raise({a, b}), do: {walk_raise(a), walk_raise(b)}
+  defp walk_raise(list) when is_list(list), do: Enum.map(list, &walk_raise/1)
+  defp walk_raise(other), do: other
 end
