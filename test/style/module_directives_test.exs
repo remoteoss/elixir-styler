@@ -294,7 +294,7 @@ defmodule Styler.Style.ModuleDirectivesTest do
         alias A.A
         """,
         """
-        require A
+        require A.A
         require A.C
 
         alias A.A
