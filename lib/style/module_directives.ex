@@ -433,11 +433,12 @@ defmodule Styler.Style.ModuleDirectives do
 
   defp apply_aliases(acc, inverted_env) when map_size(inverted_env) == 0, do: acc
 
-  defp apply_aliases(%{require: requires, nondirectives: nondirectives, alias_env: alias_env} = acc, inverted_env) do
-    # applying aliases to requires can change their ordering again
-    requires = requires |> apply_aliases(inverted_env, alias_env) |> sort()
+  defp apply_aliases(%{nondirectives: nondirectives, alias_env: alias_env} = acc, inverted_env) do
+    # Requires are intentionally left alone: they sort above aliases in strict layout,
+    # so shortening `require Foo.Bar` to `require Bar` would reference an alias declared
+    # below it (broken Elixir).
     nondirectives = apply_aliases(nondirectives, inverted_env, alias_env)
-    %{acc | require: requires, nondirectives: nondirectives}
+    %{acc | nondirectives: nondirectives}
   end
 
   # applies the aliases withi `to_as` across the given ast

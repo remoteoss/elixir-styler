@@ -176,7 +176,7 @@ defmodule Styler.Style.ModuleDirectives.AliasLiftingTest do
 
         import A.B.C
 
-        require C
+        require A.B.C
 
         alias A.B.C
 
@@ -216,7 +216,9 @@ defmodule Styler.Style.ModuleDirectives.AliasLiftingTest do
     )
   end
 
-  test "re-sorts requires after lifting" do
+  test "lifting does not rewrite require directives" do
+    # Requires sort above aliases, so a `require A.B.C` cannot be shortened to `require C` - at that point in the file,
+    # `C` isn't aliased yet.
     assert_style(
       """
       defmodule A do
@@ -224,16 +226,49 @@ defmodule Styler.Style.ModuleDirectives.AliasLiftingTest do
         require B
 
         A.B.C.foo()
+        A.B.C.foo()
       end
       """,
       """
       defmodule A do
+        require A.B.C
         require B
-        require C
 
         alias A.B.C
 
         C.foo()
+        C.foo()
+      end
+      """
+    )
+  end
+
+  test "lifting via a require sighting does not rewrite the require itself" do
+    # Regression test: one require + one nondirective use of the same FQDN used to
+    # produce a `require Baz` ordered above its `alias Foo.Bar.Baz` (broken Elixir).
+    assert_style(
+      """
+      defmodule Foo do
+        @moduledoc false
+
+        require Foo.Bar.Baz
+
+        def go do
+          Foo.Bar.Baz.go()
+        end
+      end
+      """,
+      """
+      defmodule Foo do
+        @moduledoc false
+
+        require Foo.Bar.Baz
+
+        alias Foo.Bar.Baz
+
+        def go do
+          Baz.go()
+        end
       end
       """
     )
