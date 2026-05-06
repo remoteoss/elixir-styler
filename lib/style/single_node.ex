@@ -23,6 +23,7 @@ defmodule Styler.Style.SingleNode do
   * Credo.Check.Refactor.CondStatements
   * Credo.Check.Refactor.RedundantWithClauseResult
   * Credo.Check.Refactor.WithClauses
+  * Credo.Check.Warning.ExpensiveEmptyEnumCheck
   """
 
   @behaviour Styler.Style
@@ -204,6 +205,13 @@ defmodule Styler.Style.SingleNode do
     {{:., dm, [{:__aliases__, am, [mod]}, fun]}, funm, args}
   end
 
+  # `length(x) <op> 0|1` => `x == []` or `x != []`. Avoids walking the whole list to check emptiness.
+  # `Enum.count(x) <op> 0|1` => `Enum.empty?(x)` or `not Enum.empty?(x)` (same reason).
+  # (Credo.Check.Warning.ExpensiveEmptyEnumCheck)
+  defp style({op, m, [lhs, rhs]} = ast) when op in [:==, :!=, :===, :!==, :>, :<, :>=, :<=] do
+    rewrite_empty_check(op, lhs, rhs, m) || ast
+  end
+
   # Remove parens from 0 arity funs (Credo.Check.Readability.ParenthesesOnZeroArityDefs)
   defp style({def, dm, [{fun, funm, []} | rest]}) when def in ~w(def defp)a and is_atom(fun),
     do: style({def, dm, [{fun, Keyword.delete(funm, :closing), nil} | rest]})
@@ -337,4 +345,57 @@ defmodule Styler.Style.SingleNode do
 
   defp add_underscores([a, b, c, d | rest], acc), do: add_underscores([d | rest], [?_, c, b, a | acc])
   defp add_underscores(reversed_list, acc), do: Enum.reverse(reversed_list, acc)
+
+  # ExpensiveEmptyEnumCheck helpers
+  # Picks out a `length(x)` or `Enum.count(x)` call paired with a literal `0` or `1` and rewrites
+  # the entire comparison. Returns nil for any shape that isn't a recognized empty-check pattern.
+  defp rewrite_empty_check(op, lhs, rhs, m) do
+    case {size_call(lhs), int_literal(rhs), size_call(rhs), int_literal(lhs)} do
+      {kind, n, _, _} when not is_nil(kind) and not is_nil(n) -> emit_empty_check(op, kind, n, m)
+      {_, _, kind, n} when not is_nil(kind) and not is_nil(n) -> emit_empty_check(swap_op(op), kind, n, m)
+      _ -> nil
+    end
+  end
+
+  defp size_call({:length, _, [x]}), do: {:length, x}
+  defp size_call({{:., _, [{:__aliases__, _, [:Enum]}, :count]}, _, [x]}), do: {:enum_count, x}
+  defp size_call(_), do: nil
+
+  defp int_literal({:__block__, _, [n]}) when n in [0, 1], do: n
+  defp int_literal(_), do: nil
+
+  # `length(x) <= 0` is also "empty" because length is non-negative; same for `length(x) >= 0` (tautology, skip).
+  defp empty_class(:==, 0), do: :empty
+  defp empty_class(:===, 0), do: :empty
+  defp empty_class(:!=, 0), do: :not_empty
+  defp empty_class(:!==, 0), do: :not_empty
+  defp empty_class(:>, 0), do: :not_empty
+  defp empty_class(:<=, 0), do: :empty
+  defp empty_class(:>=, 1), do: :not_empty
+  defp empty_class(:<, 1), do: :empty
+  defp empty_class(_, _), do: nil
+
+  defp swap_op(:>), do: :<
+  defp swap_op(:<), do: :>
+  defp swap_op(:>=), do: :<=
+  defp swap_op(:<=), do: :>=
+  defp swap_op(op), do: op
+
+  defp emit_empty_check(op, {:length, x}, n, m) do
+    case empty_class(op, n) do
+      :empty -> {:==, m, [x, {:__block__, [line: m[:line]], [[]]}]}
+      :not_empty -> {:!=, m, [x, {:__block__, [line: m[:line]], [[]]}]}
+      nil -> nil
+    end
+  end
+
+  defp emit_empty_check(op, {:enum_count, x}, n, m) do
+    empty_call = {{:., m, [{:__aliases__, m, [:Enum]}, :empty?]}, m, [x]}
+
+    case empty_class(op, n) do
+      :empty -> empty_call
+      :not_empty -> {:not, m, [empty_call]}
+      nil -> nil
+    end
+  end
 end

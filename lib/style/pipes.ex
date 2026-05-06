@@ -19,9 +19,11 @@ defmodule Styler.Style.Pipes do
     * Credo.Check.Readability.PipeIntoAnonymousFunctions
     * Credo.Check.Readability.SinglePipe
     * Credo.Check.Refactor.FilterCount
+    * Credo.Check.Refactor.FilterFilter
     * Credo.Check.Refactor.MapInto
     * Credo.Check.Refactor.MapJoin
     * Credo.Check.Refactor.PipeChainStart, excluded_functions: ["from"]
+    * Credo.Check.Refactor.RejectReject
   """
 
   alias Styler.Style
@@ -367,6 +369,30 @@ defmodule Styler.Style.Pipes do
        when mod in @enum,
        do: {:|>, pm, [lhs, {count, meta, [filterer]}]}
 
+  # `lhs |> Enum.filter(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> f1.(item) && f2.(item) end)`
+  # (Credo.Check.Refactor.FilterFilter)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :filter]} = filter, fm, [f1]},
+           {{:., _, [{_, _, [:Enum]}, :filter]}, _, [f2]}
+         )
+       ),
+       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm)]}]}
+
+  # `lhs |> Enum.reject(f1) |> Enum.reject(f2)` => `lhs |> Enum.reject(fn item -> f1.(item) || f2.(item) end)`
+  # (Credo.Check.Refactor.RejectReject)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :reject]} = reject, fm, [f1]},
+           {{:., _, [{_, _, [:Enum]}, :reject]}, _, [f2]}
+         )
+       ),
+       do: {:|>, pm, [lhs, {reject, fm, [combined_predicate(f1, f2, :||, fm)]}]}
+
   # `lhs |> Stream.map(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
   # `lhs |> Stream.each(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
   defp fix_pipe(
@@ -475,4 +501,18 @@ defmodule Styler.Style.Pipes do
   # function_call(with, args) or sigils. sigils are allowed, function w/ args is not
   defp valid_pipe_start?({fun, _, _args}) when is_atom(fun), do: String.match?("#{fun}", ~r/^sigil_[a-zA-Z]$/)
   defp valid_pipe_start?(_), do: true
+
+  # Combines two 1-arity predicates into a single anonymous function: `fn item -> f1.(item) <op> f2.(item) end`.
+  # Universal form that's correct regardless of whether each predicate is a capture, an `&(...)` shortform,
+  # or an explicit `fn x -> ... end`. Used by FilterFilter (op: `&&`) and RejectReject (op: `||`).
+  defp combined_predicate(f1, f2, op, m) do
+    line = m[:line]
+    item = {:item, [line: line], nil}
+    body = {op, [line: line], [predicate_call(f1, item, line), predicate_call(f2, item, line)]}
+    {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
+  end
+
+  defp predicate_call(fun, arg, line) do
+    {{:., [line: line], [fun]}, [closing: [line: line], line: line], [arg]}
+  end
 end

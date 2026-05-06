@@ -377,6 +377,44 @@ defmodule Styler.Style.SingleNodeTest do
     end
   end
 
+  describe "ExpensiveEmptyEnumCheck" do
+    test "rewrites `length(x) <op> 0|1` to comparisons against `[]`" do
+      assert_style("length(x) == 0", "x == []")
+      assert_style("length(x) === 0", "x == []")
+      assert_style("length(x) != 0", "x != []")
+      assert_style("length(x) !== 0", "x != []")
+      assert_style("length(x) > 0", "x != []")
+      assert_style("length(x) <= 0", "x == []")
+      assert_style("length(x) >= 1", "x != []")
+      assert_style("length(x) < 1", "x == []")
+    end
+
+    test "handles the reversed forms (literal on the left)" do
+      assert_style("0 == length(x)", "x == []")
+      assert_style("0 != length(x)", "x != []")
+      assert_style("0 < length(x)", "x != []")
+      assert_style("0 >= length(x)", "x == []")
+      assert_style("1 <= length(x)", "x != []")
+      assert_style("1 > length(x)", "x == []")
+    end
+
+    test "rewrites `Enum.count(x) <op> 0|1` to `Enum.empty?/1` (or `not Enum.empty?/1`)" do
+      assert_style("Enum.count(x) == 0", "Enum.empty?(x)")
+      assert_style("Enum.count(x) != 0", "not Enum.empty?(x)")
+      assert_style("Enum.count(x) > 0", "not Enum.empty?(x)")
+      assert_style("Enum.count(x) < 1", "Enum.empty?(x)")
+      assert_style("Enum.count(x) >= 1", "not Enum.empty?(x)")
+      assert_style("0 < Enum.count(x)", "not Enum.empty?(x)")
+    end
+
+    test "leaves unrelated comparisons alone" do
+      assert_style("length(x) == 5")
+      assert_style("length(x) > 1")
+      assert_style("foo == 0")
+      assert_style("Enum.count(x, fun) == 0")
+    end
+  end
+
   describe "to_timeout" do
     test "to next unit" do
       facts = [
