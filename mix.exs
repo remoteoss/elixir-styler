@@ -12,7 +12,7 @@ defmodule Styler.MixProject do
   use Mix.Project
 
   # Don't forget to bump the README when doing non-patch version changes
-  @version "1.4.2"
+  @version "1.11.0"
   @url "https://github.com/adobe/elixir-styler"
 
   def project do
@@ -49,7 +49,7 @@ defmodule Styler.MixProject do
     [
       maintainers: ["Matt Enlow", "Greg Mefford"],
       licenses: ["Apache-2.0"],
-      links: %{"GitHub" => @url}
+      links: %{"GitHub" => @url, "Changelog" => "#{@url}/blob/main/CHANGELOG.md"}
     ]
   end
 
@@ -59,18 +59,19 @@ defmodule Styler.MixProject do
       source_ref: "v#{@version}",
       source_url: @url,
       groups_for_extras: [
-        Rewrites: ~r/docs/
+        Features: ~r/docs/
       ],
       extra_section: "Docs",
       extras: [
         "CHANGELOG.md": [title: "Changelog"],
-        "docs/styles.md": [title: "Basic Styles"],
-        "docs/deprecations.md": [title: "Deprecated Elixirisms"],
-        "docs/pipes.md": [title: "Pipe Chains"],
+        "docs/styles.md": [title: "Styles/Features Table of Contents"],
+        "docs/comment_directives.md": [title: "Comment Directives (# styler:sort)"],
         "docs/control_flow_macros.md": [title: "Control Flow Macros (if, case, ...)"],
+        "docs/deprecations.md": [title: "Deprecated Elixirisms"],
+        "docs/general_styles.md": [title: "General Styles"],
         "docs/mix_configs.md": [title: "Mix Configs (config/*.exs)"],
         "docs/module_directives.md": [title: "Module Directives (use, alias, ...)"],
-        "docs/comment_directives.md": [title: "Comment Directives (# styler:sort)"],
+        "docs/pipes.md": [title: "Pipe Chains"],
         "docs/credo.md": [title: "Styler & Credo"],
         "README.md": [title: "Styler"]
       ]

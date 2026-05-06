@@ -11,19 +11,77 @@
 defmodule Styler.Style.SingleNodeTest do
   use Styler.StyleCase, async: true
 
+  describe "assert/refute" do
+    test "negation" do
+      assert_style "assert x != nil", "assert x"
+      assert_style "assert !!x", "assert x"
+      assert_style "assert !x", "refute x"
+      assert_style "assert not x", "refute x"
+      assert_style "assert !is_nil(x)", "assert x"
+      assert_style "assert x not in y"
+
+      assert_style "assert nil == nil", "assert nil == nil"
+      assert_style "assert nil != nil", "assert nil"
+
+      assert_style "refute x != y", "assert x == y"
+      assert_style "refute x !== y", "assert x === y"
+      assert_style "refute x != nil", "assert x == nil"
+      assert_style "refute !x", "assert x"
+      assert_style "refute not x", "assert x"
+      assert_style "refute x not in y"
+
+      assert_style "assert x == nil"
+      assert_style "assert is_nil(x)"
+      assert_style "refute x"
+    end
+
+    test "Enum.member? -> in" do
+      assert_style "assert Enum.member?(enum, x)", "assert x in enum"
+      assert_style "refute Enum.member?(enum, x)", "refute x in enum"
+      assert_style "assert not Enum.member?(enum, x)", "refute x in enum"
+      assert_style "refute not Enum.member?(enum, x)", "assert x in enum"
+    end
+
+    test "Enum.find -> any?" do
+      assert_style "assert Enum.find(x, y)", "assert Enum.any?(x, y)"
+      assert_style "refute Enum.find(x, y)", "refute Enum.any?(x, y)"
+    end
+
+    test "Enum.any?(x, & &1 == y) -> y in x" do
+      assert_style "assert Enum.any?(x, y)"
+      assert_style "assert Enum.any?(x, &(&1.x == y))"
+      assert_style "assert Enum.any?(x, &(&1 != y))"
+      assert_style "assert Enum.any?(y, & &1 == x)", "assert x in y"
+      assert_style "assert Enum.any?(y, fn q -> q == x end)", "assert x in y"
+      assert_style "assert Enum.find(y, & &1 == x)", "assert x in y"
+      assert_style "assert Enum.find(y, fn q -> q == x end)", "assert x in y"
+    end
+
+    test "boolean comparisons" do
+      assert_style "assert x < y"
+      assert_style "assert x <= y"
+      assert_style "assert x > y"
+      assert_style "assert x >= y"
+      assert_style "refute x < y", "assert x >= y"
+      assert_style "refute x <= y", "assert x > y"
+      assert_style "refute x > y", "assert x <= y"
+      assert_style "refute x >= y", "assert x < y"
+    end
+  end
+
   test "string sigil rewrites" do
     assert_style ~s|""|
-    assert_style ~s|"\\""|
-    assert_style ~s|"\\"\\""|
-    assert_style ~s|"\\"\\"\\""|
-    assert_style ~s|"\\"\\"\\"\\""|, ~s|~s("""")|
+    assert_style ~S|"\""|
+    assert_style ~S|"\"\""|
+    assert_style ~S|"\"\"\""|
+    assert_style ~S|"\"\"\"\""|, ~s|~s("""")|
     # choose closing delimiter wisely, based on what has the least conflicts, in the styliest order
-    assert_style ~s/"\\"\\"\\"\\" )"/, ~s/~s{"""" )}/
-    assert_style ~s/"\\"\\"\\"\\" })"/, ~s/~s|"""" })|/
-    assert_style ~s/"\\"\\"\\"\\" |})"/, ~s/~s["""" |})]/
-    assert_style ~s/"\\"\\"\\"\\" ]|})"/, ~s/~s'"""" ]|})'/
-    assert_style ~s/"\\"\\"\\"\\" ']|})"/, ~s/~s<"""" ']|})>/
-    assert_style ~s/"\\"\\"\\"\\" >']|})"/, ~s|~s/"""" >']\|})/|
+    assert_style ~S/"\"\"\"\" )"/, ~s/~s{"""" )}/
+    assert_style ~S/"\"\"\"\" })"/, ~s/~s|"""" })|/
+    assert_style ~S/"\"\"\"\" |})"/, ~s/~s["""" |})]/
+    assert_style ~S/"\"\"\"\" ]|})"/, ~s/~s'"""" ]|})'/
+    assert_style ~S/"\"\"\"\" ']|})"/, ~s/~s<"""" ']|})>/
+    assert_style ~S/"\"\"\"\" >']|})"/, ~s|~s/"""" >']\|})/|
     assert_style ~s/"\\"\\"\\"\\" \/>']|})"/, ~s|~s("""" />']\|}\\))|
   end
 
@@ -186,11 +244,13 @@ defmodule Styler.Style.SingleNodeTest do
         """
         case foo do
           bar = _ -> :ok
+          _ -> :error
         end
         """,
         """
         case foo do
           bar -> :ok
+          _ -> :error
         end
         """
       )
@@ -199,11 +259,13 @@ defmodule Styler.Style.SingleNodeTest do
         """
         case foo do
           _ = bar -> :ok
+          _ = second_clause_to_maintain_case -> :ok
         end
         """,
         """
         case foo do
           bar -> :ok
+          second_clause_to_maintain_case -> :ok
         end
         """
       )
@@ -334,10 +396,15 @@ defmodule Styler.Style.SingleNodeTest do
       assert_style "to_timeout(second: 60 * 60)", "to_timeout(hour: 1)"
     end
 
-    test "doesnt mess with" do
+    test "plurals and multiples oh my" do
+      assert_style "to_timeout(hours: 24 * 1, seconds: 60 * 4)", "to_timeout(day: 1, minute: 4)"
+      # nb: this'll raise an argument error after styling.
+      assert_style "to_timeout(minute: 60, hours: 3)", "to_timeout(hour: 1, hour: 3)"
+    end
+
+    test "doesnt mess with non-integers" do
       assert_style "to_timeout(hour: n * m)"
       assert_style "to_timeout(whatever)"
-      assert_style "to_timeout(hour: 24 * 1, second: 60 * 4)"
     end
   end
 end

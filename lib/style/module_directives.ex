@@ -48,9 +48,60 @@ defmodule Styler.Style.ModuleDirectives do
 
   @directives ~w(alias import require use)a
   @attr_directives ~w(moduledoc shortdoc behaviour)a
-  @defstruct ~w(schema embedded_schema defstruct)a
 
-  def run({{:defmodule, _, children}, _} = zipper, ctx) do
+  @env %{
+    shortdoc: [],
+    moduledoc: [],
+    behaviour: [],
+    use: [],
+    import: [],
+    alias: [],
+    require: [],
+    nondirectives: [],
+    alias_env: %{},
+    attrs: MapSet.new()
+  }
+
+  # module directives typically doesn't do anything until it sees a module (typical .ex file) or a directive (like a snippet)
+  # however, if we're in a snippet with no directives we'll never do any work!
+  # so, we fast-forward the traversal looking for an interesting node.
+  # if we find one, we'll mark that this file is interesting and proceed as normal from there.
+  # if we _dont_ find one, then we're likely in a snippet with no typical directives.
+  #   in that case, all that's left is to apply alias lifting and halt.
+  def run(zipper, %{__MODULE__ => true} = ctx), do: do_run(zipper, ctx)
+
+  def run({node, nil} = zipper, ctx) do
+    if interesting_zipper = Zipper.find(zipper, &match?({x, _, _} when x in [:defmodule, :@ | @directives], &1)) do
+      do_run(interesting_zipper, Map.put(ctx, __MODULE__, true))
+    else
+      # there's no defmodules or aliasy things - see if we can do some alias lifting?
+      case lift_aliases(%{@env | nondirectives: [node]}) do
+        %{alias: []} ->
+          {:halt, zipper, ctx}
+
+        %{alias: aliases, nondirectives: [node]} ->
+          # This is a line handler unique to this situation.
+          # Nowhere else do we create nodes that we know will go before all existing code in the document.
+          # All we need to do is set those aliases to have the appropriate lines,
+          # then bump the line of everything else in the document by the number of aliases + 1!
+          aliases = Enum.with_index(aliases, fn node, i -> Style.set_line(node, i + 1) end)
+          shift = Enum.count(aliases) + 1
+          comments = Enum.map(ctx.comments, &%{&1 | line: &1.line + shift})
+          node = Style.shift_line(node, shift)
+
+          zipper =
+            case Zipper.replace(zipper, node) do
+              {{:__block__, _, _}, _} = block_zipper -> Zipper.insert_children(block_zipper, aliases)
+              # this snippet was a single element, eg just one big map in a credo config file.
+              non_block_zipper -> Zipper.prepend_siblings(non_block_zipper, aliases)
+            end
+
+          {:halt, zipper, %{ctx | comments: comments}}
+      end
+    end
+  end
+
+  defp do_run({{:defmodule, _, children}, _} = zipper, ctx) do
     [name, [{{:__block__, do_meta, [:do]}, _body}]] = children
 
     if do_meta[:format] == :keyword do
@@ -86,14 +137,14 @@ defmodule Styler.Style.ModuleDirectives do
 
             {:skip, zipper, ctx}
           else
-            run(body_zipper, ctx)
+            do_run(body_zipper, ctx)
           end
       end
     end
   end
 
   # Style directives inside of snippets or function defs.
-  def run({{directive, _, children}, _} = zipper, ctx) when directive in @directives and is_list(children) do
+  defp do_run({{directive, _, children}, _} = zipper, ctx) when directive in @directives and is_list(children) do
     # Need to be careful that we aren't getting false positives on variables or fns like `def import(foo)` or `alias = 1`
     case Style.ensure_block_parent(zipper) do
       {:ok, zipper} -> {:skip, zipper |> Zipper.up() |> organize_directives(), ctx}
@@ -102,66 +153,43 @@ defmodule Styler.Style.ModuleDirectives do
     end
   end
 
-  # puts `@derive` before `defstruct` etc, fixing compiler warnings
-  def run({{:@, _, [{:derive, _, _}]}, _} = zipper, ctx) do
-    case Style.ensure_block_parent(zipper) do
-      {:ok, {derive, {l, p, r}}} ->
-        previous_defstruct =
-          l
-          |> Stream.with_index()
-          |> Enum.find_value(fn
-            {{struct_def, meta, _}, index} when struct_def in @defstruct -> {meta[:line], index}
-            _ -> nil
-          end)
+  defp do_run(zipper, ctx), do: {:cont, zipper, ctx}
 
-        if previous_defstruct do
-          {defstruct_line, defstruct_index} = previous_defstruct
-          derive = Style.set_line(derive, defstruct_line - 1)
-          left_siblings = List.insert_at(l, defstruct_index + 1, derive)
-          {:skip, Zipper.remove({derive, {left_siblings, p, r}}), ctx}
-        else
-          {:cont, zipper, ctx}
-        end
-
-      :error ->
-        {:cont, zipper, ctx}
-    end
-  end
-
-  def run(zipper, ctx), do: {:cont, zipper, ctx}
-
-  # a dynamic module name, like `defmodule my_variable do ... end`
+  # Don't auto-add `@moduledoc false`; leave moduledoc decisions to authors.
   defp moduledoc(_), do: nil
 
-  @acc %{
-    shortdoc: [],
-    moduledoc: [],
-    behaviour: [],
-    use: [],
-    import: [],
-    alias: [],
-    require: [],
-    nondirectives: [],
-    dealiases: %{},
-    attrs: MapSet.new(),
-    attr_lifts: []
-  }
-
-  defp lift_module_attrs({_node, _, _} = ast, %{attrs: attrs} = acc) do
-    if Enum.empty?(attrs) do
-      {ast, acc}
+  # pops module attributes this directive depends on out of `nondirectives`,
+  # returning their definitions in a list alongside the updated accumulator
+  #
+  # naively grouping module attributes in nondirectives can break a common pattern where an attribute is referenced by
+  # `use` or `@moduledoc` clauses, which then get moved above the attributes they reference.
+  # this function finds and returns those dependencies, allowing the caller to keep them above the dependent directive
+  defp split_depended_attributes({_, _, _} = directive, %{attrs: attrs, nondirectives: nondirectives} = acc) do
+    if MapSet.size(attrs) == 0 do
+      {[], acc}
     else
-      Macro.prewalk(ast, acc, fn
-        {:@, _m, [{attr, _, _} = var]} = ast, acc ->
+      directive
+      |> Macro.prewalk({[], acc}, fn
+        {:@, _, [{attr, _, _}]} = ast, {prepends, acc} ->
           if attr in attrs do
-            {var, %{acc | attr_lifts: [attr | acc.attr_lifts]}}
+            {definitions, nondirectives} = Enum.split_with(nondirectives, &match?({:@, _, [{^attr, _, _}]}, &1))
+            acc = %{acc | nondirectives: nondirectives}
+
+            recursed =
+              Enum.reduce(definitions, {definitions ++ prepends, acc}, fn ast, {prepends, acc} ->
+                {definitions, acc} = split_depended_attributes(ast, acc)
+                {prepends ++ definitions, acc}
+              end)
+
+            {ast, recursed}
           else
-            {ast, acc}
+            {ast, {prepends, acc}}
           end
 
         ast, acc ->
           {ast, acc}
       end)
+      |> elem(1)
     end
   end
 
@@ -169,24 +197,25 @@ defmodule Styler.Style.ModuleDirectives do
     acc =
       parent
       |> Zipper.children()
-      |> Enum.reduce(@acc, fn
+      |> Enum.reduce(@env, fn
         {:@, _, [{attr_directive, _, _}]} = ast, acc when attr_directive in @attr_directives ->
-          # attr_directives are moved above aliases, so we need to dealias them
-          {ast, acc} = acc.dealiases |> AliasEnv.expand(ast) |> lift_module_attrs(acc)
-          %{acc | attr_directive => [ast | acc[attr_directive]]}
+          # attr_directives are moved above aliases, so we need to expand them
+          ast = AliasEnv.expand_ast(acc.alias_env, ast)
+          {prepends, acc} = split_depended_attributes(ast, acc)
+          %{acc | attr_directive => [ast | prepends ++ acc[attr_directive]]}
 
         {:@, _, [{attr, _, _}]} = ast, acc ->
           %{acc | nondirectives: [ast | acc.nondirectives], attrs: MapSet.put(acc.attrs, attr)}
 
         {directive, _, _} = ast, acc when directive in @directives ->
-          {ast, acc} = lift_module_attrs(ast, acc)
+          {prepends, acc} = split_depended_attributes(ast, acc)
           ast = expand(ast)
-          # import and used get hoisted above aliases, so need to dealias
-          ast = if directive in ~w(import use)a, do: AliasEnv.expand(acc.dealiases, ast), else: ast
-          dealiases = if directive == :alias, do: AliasEnv.define(acc.dealiases, ast), else: acc.dealiases
+          # import and use get hoisted above aliases, so need to expand them
+          ast = if directive in ~w(import use)a, do: AliasEnv.expand_ast(acc.alias_env, ast), else: ast
+          alias_env = if directive == :alias, do: AliasEnv.define(acc.alias_env, ast), else: acc.alias_env
 
           # the reverse accounts for `expand` putting things in reading order, whereas we're accumulating in reverse
-          %{acc | directive => Enum.reverse(ast, acc[directive]), dealiases: dealiases}
+          %{acc | directive => Enum.reverse(ast, prepends ++ acc[directive]), alias_env: alias_env}
 
         ast, acc ->
           %{acc | nondirectives: [ast | acc.nondirectives]}
@@ -196,43 +225,14 @@ defmodule Styler.Style.ModuleDirectives do
         {:moduledoc, []} -> {:moduledoc, List.wrap(moduledoc)}
         {:use, uses} -> {:use, uses |> Enum.reverse() |> Style.reset_newlines()}
         {directive, to_sort} when directive in ~w(behaviour import alias require)a -> {directive, sort(to_sort)}
-        {:dealiases, d} -> {:dealiases, d}
+        {:alias_env, d} -> {:alias_env, d}
         {k, v} -> {k, Enum.reverse(v)}
       end)
+      |> redefine_alias_env()
       |> lift_aliases()
-      |> Map.update!(:moduledoc, &Style.reset_newlines(&1))
-
-    # Not happy with it, but this does the work to move module attribute assignments above the module or quote or whatever
-    # Given that it'll only be run once and not again, i'm okay with it being inefficient
-    {acc, parent} =
-      if Enum.any?(acc.attr_lifts) do
-        lifts = acc.attr_lifts
-
-        nondirectives =
-          Enum.map(acc.nondirectives, fn
-            {:@, m, [{attr, am, _}]} = ast -> if attr in lifts, do: {:@, m, [{attr, am, [{attr, am, nil}]}]}, else: ast
-            ast -> ast
-          end)
-
-        assignments =
-          Enum.flat_map(acc.nondirectives, fn
-            {:@, m, [{attr, am, [val]}]} -> if attr in lifts, do: [{:=, m, [{attr, am, nil}, val]}], else: []
-            _ -> []
-          end)
-
-        {past, _} = parent
-
-        parent =
-          parent
-          |> Zipper.up()
-          |> Style.find_nearest_block()
-          |> Zipper.prepend_siblings(assignments)
-          |> Zipper.find(&(&1 == past))
-
-        {%{acc | nondirectives: nondirectives}, parent}
-      else
-        {acc, parent}
-      end
+      |> apply_aliases()
+      # always force a blank line between @moduledoc and the next directive
+      |> Map.update!(:moduledoc, &Style.reset_newlines/1)
 
     nondirectives = acc.nondirectives
 
@@ -262,42 +262,45 @@ defmodule Styler.Style.ModuleDirectives do
     end
   end
 
-  defp lift_aliases(%{alias: aliases, require: requires, nondirectives: nondirectives} = acc) do
-    # we can't use the dealias map built into state as that's what things look like before sorting
-    # now that we've sorted, it could be different!
-    dealiases = AliasEnv.define(aliases)
-    liftable = find_liftable_aliases(requires ++ nondirectives, dealiases)
+  # alias_env have to be recomputed after we've sorted our `alias` nodes
+  defp redefine_alias_env(%{alias: aliases} = acc), do: %{acc | alias_env: AliasEnv.define(aliases)}
+
+  defp lift_aliases(%{alias: aliases, require: requires, nondirectives: nondirectives, alias_env: alias_env} = acc) do
+    liftable = find_liftable_aliases(requires ++ nondirectives, alias_env)
 
     if Enum.any?(liftable) do
       # This is a silly hack that helps comments stay put.
       # The `cap_line` algo was designed to handle high-line stuff moving up into low line territory, so we set our
       # new node to have an arbitrarily high line annnnd comments behave! i think.
       m = [line: 999_999]
+      aliases_m = [last: m] ++ m
 
       aliases =
         liftable
-        |> Enum.map(&AliasEnv.expand(dealiases, {:alias, m, [{:__aliases__, [{:last, m} | m], &1}]}))
+        |> Enum.map(&{:alias, m, [{:__aliases__, aliases_m, AliasEnv.expand(alias_env, &1)}]})
         |> Enum.concat(aliases)
         |> sort()
 
-      # lifting could've given us a new order
-      requires = requires |> do_lift_aliases(liftable) |> sort()
-      nondirectives = do_lift_aliases(nondirectives, liftable)
-      %{acc | alias: aliases, require: requires, nondirectives: nondirectives}
+      # aliases to be lifted have to be applied immediately; yes, these means we're doing multiple apply_alias traversals,
+      # but we're only doing the duplicate traversals when we're updating the file, so the extra cost of walking
+      # is negligible vs doing disk I/O
+      %{acc | alias: aliases}
+      |> apply_aliases(Map.new(liftable, fn modules -> {modules, List.last(modules)} end))
+      |> redefine_alias_env()
     else
       acc
     end
   end
 
-  defp find_liftable_aliases(ast, dealiases) do
-    excluded = dealiases |> Map.keys() |> Enum.into(Styler.Config.get(:lifting_excludes))
+  defp find_liftable_aliases(ast, alias_env) do
+    excluded = alias_env |> Map.keys() |> Enum.into(Styler.Config.get(:lifting_excludes))
 
-    firsts = MapSet.new(dealiases, fn {_last, [first | _]} -> first end)
+    firsts = MapSet.new(alias_env, fn {_last, [first | _]} -> first end)
 
     ast
     |> Zipper.zip()
     # we're reducing a datastructure that looks like
-    # %{last => {aliases, seen_before?} | :some_collision_probelm}
+    # %{last => {aliases, seen_before?} | :some_collision_problem}
     |> Zipper.reduce_while(%{}, fn
       # we don't want to rewrite alias name `defx Aliases ... do` of these three keywords
       {{defx, _, args}, _} = zipper, lifts when defx in ~w(defmodule defimpl defprotocol)a ->
@@ -312,7 +315,7 @@ defmodule Styler.Style.ModuleDirectives do
               lifts
           end
 
-        # move the focus to the body block, zkipping over the alias (and the `for` keyword for `defimpl`)
+        # move the focus to the body block, skipping over the alias (and the `for` keyword for `defimpl`)
         {:skip, zipper |> Zipper.down() |> Zipper.rightmost() |> Zipper.down() |> Zipper.down(), lifts}
 
       {{:quote, _, _}, _} = zipper, lifts ->
@@ -324,8 +327,9 @@ defmodule Styler.Style.ModuleDirectives do
         lifts =
           cond do
             # this alias already exists, they just wrote it out fully and are leaving it up to us to shorten it down!
-            dealiases[last] == aliases ->
-              Map.put(lifts, last, {aliases, true})
+            # we'll get it when we do the apply-aliases scan
+            alias_env[last] == aliases ->
+              lifts
 
             last in excluded or Enum.any?(aliases, &(not is_atom(&1))) ->
               lifts
@@ -417,27 +421,71 @@ defmodule Styler.Style.ModuleDirectives do
     |> MapSet.new(fn {_, {aliases, true}} -> aliases end)
   end
 
-  defp do_lift_aliases(ast, to_alias) do
+  defp apply_aliases(acc) do
+    apply_aliases(acc, AliasEnv.invert(acc.alias_env))
+  end
+
+  defp apply_aliases(acc, inverted_env) when map_size(inverted_env) == 0, do: acc
+
+  defp apply_aliases(%{require: requires, nondirectives: nondirectives, alias_env: alias_env} = acc, inverted_env) do
+    # applying aliases to requires can change their ordering again
+    requires = requires |> apply_aliases(inverted_env, alias_env) |> sort()
+    nondirectives = apply_aliases(nondirectives, inverted_env, alias_env)
+    %{acc | require: requires, nondirectives: nondirectives}
+  end
+
+  # applies the aliases withi `to_as` across the given ast
+  # alias_env is used to expand partial aliases
+  defp apply_aliases(ast, to_as, alias_env) do
     ast
     |> Zipper.zip()
-    |> Zipper.traverse(fn
+    |> Zipper.traverse_while(fn
       {{defx, _, [{:__aliases__, _, _} | _]}, _} = zipper when defx in ~w(defmodule defimpl defprotocol)a ->
-        # move the focus to the body block, zkipping over the alias (and the `for` keyword for `defimpl`)
-        zipper |> Zipper.down() |> Zipper.rightmost() |> Zipper.down() |> Zipper.down() |> Zipper.right()
+        # move the focus to the body block, skipping over the alias (and the `for` keyword for `defimpl`)
+        zipper = zipper |> Zipper.down() |> Zipper.rightmost() |> Zipper.down() |> Zipper.down() |> Zipper.right()
+        {:cont, zipper}
 
-      {{:alias, _, [{:__aliases__, _, [_, _, _ | _] = aliases}]}, _} = zipper ->
-        # the alias was aliased deeper down. we've lifted that alias to a root, so delete this alias
-        if aliases in to_alias,
-          do: Zipper.remove(zipper),
-          else: zipper
+      {{:quote, _, _}, _} = zipper ->
+        {:skip, zipper}
 
-      {{:__aliases__, meta, [_, _, _ | _] = aliases}, _} = zipper ->
-        if aliases in to_alias,
-          do: Zipper.replace(zipper, {:__aliases__, meta, [List.last(aliases)]}),
-          else: zipper
+      # apply_aliases is only called on nondirectives (+requires), so this alias must exist within a child node like a def
+      # if it's within `to_as` then it's an alias that's already defined further up and is thus a duplicate
+      # either because we lifted and so created a duplicate, or it was just plain ol' user user error.
+      # either way, we can nix it
+      {{:alias, _, [{:__aliases__, _, [_ | _] = modules}]}, _} = zipper ->
+        zipper = if to_as[modules], do: Zipper.remove(zipper), else: zipper
+        {:cont, zipper}
+
+      # `alias Foo.Bar.Baz, as: Whatever` - never rewrite the LHS through application,
+      # otherwise we'd produce nonsense like `alias Whatever, as: Whatever`.
+      # only dedup when the inner alias is an exact duplicate of one defined further up.
+      {{:alias, _, [{:__aliases__, _, [_ | _] = modules}, [{_, {:__aliases__, _, [as]}}]]}, _} = zipper ->
+        zipper = if to_as[modules] == as, do: Zipper.remove(zipper), else: zipper
+        {:skip, zipper}
+
+      # We check even modules of 1 length to catch silly situations like
+      # alias A.B.C
+      # alias A.B.C, as: X
+      # That'll then rename all C to X and C will become unused
+      {{:__aliases__, meta, [_ | _] = modules}, _} = zipper ->
+        zipper =
+          cond do
+            # There's an alias for this module - replace it with its `as`
+            as = to_as[modules] -> Zipper.replace(zipper, {:__aliases__, meta, [as]})
+            # There's an alias for this modules expansion - replace it with its `as`
+            #
+            # This addresses the following:
+            # given modules=`C.D`, to_as=`A.B.C => C, A.B.C.D => X`,
+            # should yield -> `X` because `C.D -> A.B.C.D -> X`
+            as = to_as[AliasEnv.expand(alias_env, modules)] -> Zipper.replace(zipper, {:__aliases__, meta, [as]})
+            true -> zipper
+          end
+
+        # minor optimization - don't need to walk the module list!
+        {:skip, zipper}
 
       zipper ->
-        zipper
+        {:cont, zipper}
     end)
     |> Zipper.node()
   end
@@ -474,7 +522,6 @@ defmodule Styler.Style.ModuleDirectives do
     |> Style.reset_newlines()
   end
 
-  # TODO investigate removing this in favor of the Style.post_sort_cleanup(node, comments)
   # "Fixes" the line numbers of nodes who have had their orders changed via sorting or other methods.
   # This "fix" simply ensures that comments don't get wrecked as part of us moving AST nodes willy-nilly.
   #

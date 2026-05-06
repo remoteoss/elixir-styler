@@ -59,9 +59,14 @@ defmodule Styler.Style.Deprecations do
   end
 
   if Version.match?(System.version(), ">= 1.17.0-dev") do
-    for {erl, ex} <- [hours: :hour, minutes: :minute, seconds: :second] do
-      defp style({{:., _, [{:__block__, _, [:timer]}, unquote(erl)]}, fm, [x]}),
-        do: {:to_timeout, fm, [[{{:__block__, [format: :keyword, line: fm[:line]], [unquote(ex)]}, x}]]}
+    @to_timeout_vsn Version.parse!("1.17.0-dev")
+    defp style({{:., _, [{:__block__, _, [:timer]}, unit]}, fm, [x]} = node) when unit in ~w(hours minutes seconds)a do
+      if Styler.Config.version_compatible?(@to_timeout_vsn) do
+        unit = unit |> Atom.to_string() |> String.trim_trailing("s") |> String.to_atom()
+        {:to_timeout, fm, [[{{:__block__, [format: :keyword, line: fm[:line]], [unit]}, x}]]}
+      else
+        node
+      end
     end
   end
 

@@ -2,7 +2,253 @@
 
 **Note** Styler's only public API is its usage as a formatter plugin. While you're welcome to play with its internals,
 they can and will change without that change being reflected in Styler's semantic version.
+
 ## main
+
+## 1.11.0
+
+### Improvements
+
+- `mix styler.inline_attrs`: Allow multiple file paths to be specified: `mix styler.inline_attrs <file1> [<file2> ...]`
+
+#### Module Directive References
+
+Module directives got smarter. Styler will no longer move module attributes below their references in `use` or `@moduledoc`s.
+
+In other words, Styler will leave the following code untouched:
+
+```elixir
+defmodule MyGreatLibrary do
+  @library_options [...]
+  @moduledoc make_pretty_docs(@library_options)
+  use OptionsMagic, my_opts: @library_options
+end
+```
+
+## 1.10.1
+
+### Improvements
+
+Adds two experimental refactoring features as mix tasks.
+
+#### `mix styler.remove_unused`
+
+With Elixir 1.20 on the horizon, many projects are about to discover that they have _a lot_ of unnecessary `require Logger` lines throughout their codebase.
+
+`mix styler.remove_unused` will automate the removal of those `unused require:` statements, alongside any `unused import:` and `unused alias:` warnings.
+
+This has long been an internal script useful for running after a bigger refactor that resulted in many superfluous aliases, but with 1.20 coming it seems it might be useful for others as well.
+
+This will never be an integrated part of `Styler`'s format plugin features, as it would _not_ be correct to remove unused nodes whenever running format. It's typical to have unused warnings while in the midst of an implementation, and deleting that code would be obnoxious.
+
+#### `mix styler.inline_attrs <file>`
+
+Inlines one-off module attributes that define literal values.
+
+This is something that sometimes is good, and sometimes is bad. In general, defining a module attribute when you could've just written an atom is bad, so inlining is good!
+
+It would probably be most useful as a refactor ability for a language server, but CLIs are a nice second place.
+
+An example of a situation where it results in an improvement:
+
+```elixir
+# Unnecessary indirection with single-use literal-value module attributes
+defmodule A do
+  @http_client_key :http_key
+  @default_client MyHTTPClient
+
+  def http_client, do: Application.get_env(:my_app, @http_client_key, @default_client)
+end
+# Much better! styler.inline_attrs will perform this refactor
+defmodule A do
+  def http_client, do: Application.get_env(:my_app, :http_key, MyHTTPClient)
+end
+```
+
+It's worthwhile to run this on some suspicious files, then followup with manual intervention when it went too far. This style is not aware of quote boundaries, and so might do some broken things. (Hence "EXPERIMENTAL")
+
+You've been warned =)
+
+## 1.10.0
+
+### Improvements
+
+Two new standard-library pipe optimizations
+
+- `enum |> Enum.map(fun) |> Enum.intersperse(separator)` => `Enum.map_intersperse(enum, separator, fun)`
+- `enum |> Enum.sort() |> Enum.reverse()` => `Enum.sort(enum, :desc)`
+
+And Req (the http client library) pipe optimizations, as detailed below
+
+#### Req pipe optimizations
+
+[Req](https://github.com/wojtekmach/req) is a popular HTTP Client. If you aren't using it, you can just ignore this whole section!
+
+Reqs 1-arity "execute the request" functions (`delete get head patch post put request run`) have a 2-arity version that takes a superset of the arguments `Req.new/1` does as its first argument, and the typical `options` keyword list as its second argument. And so, many places developers are calling a 1-arity function can be replaced with a 2-arity function.
+
+More succinctly, these two statements are equivalent:
+
+- `foo |> Req.new() |> Req.merge(bar) |> Req.post!()`
+- `Req.post!(foo, bar)`
+
+Styler now rewrites the former to the latter, since "less is more" or "code is a liability".
+
+It also rewrites `|> Keyword.merge(bar) |> Req.foo()` to `|> Req.foo(bar)`. **This changes the program's behaviour**, since `Keyword.merge` would overwrite existing values in all cases, whereas `Req` 2-arity functions intelligently deep-merge values for some keys, like `:headers`.
+
+## 1.9.1
+
+### Fix
+
+- fixes rewrites of single-clause case statement with assignment parent (Closes #247, h/t @vasspilka)
+
+## 1.9.0
+
+This was a weird one, but I found myself often writing `to_timeout` with plural units and then having to go back and fix
+the code to be singular units instead. Polling a few colleagues, it seemed I wasn't alone in that mistake. So for the first time,
+Styler will correct code that would otherwise produce a runtime error, saving you from flow-breaking backtracking.
+
+### Improvements
+
+`to_timeout` improvements:
+
+- translate plural units to singular `to_timeout(hours: 2)` -> `to_timeout(hour: 2)` (plurals are valid ast, but invalid arguments to this function)
+- transform when there are multiple keys: `to_timeout(hours: 24 * 1, seconds: 60 * 4)` -> `to_timeout(day: 1, minute: 4)`. **this can introduce runtime bugs** due to duplicate keys, as in the following scenario: `to_timeout(minute: 60, hours: 3)` -> `to_timeout(hour: 1, hour: 3)`
+
+## 1.8.0
+
+### Improvements
+
+Rewrite single-clause case statements to be assignments (h/t 🤖)
+
+```elixir
+# before
+case foo |> Bar.baz() |> Bop.boop() do
+  {:ok, widget} ->
+    x = y
+    wodget(widget)
+end
+
+# after
+{:ok, widget} = foo |> Bar.baz() |> Bop.boop()
+x = y
+wodget(widget)
+```
+
+## 1.7.0
+
+Surprising how fast numbers go up when you're following semver.
+
+Two new features, one being a pipe optimization and the other a style-consistency-enforcer in `cond` statements.
+
+### Improvements
+
+- `|> Enum.filter(fun) |> List.first([default])` => `|> Enum.find([default], fun)` (#242, h/t @janpieper)
+
+#### `cond`
+
+If the last clause's left-hand-side is a truthy atom, map literal, or tuple, rewrite it to be `true`
+
+```elixir
+# before
+cond do
+  a -> b
+  c -> d
+  :else -> e
+end
+
+# styled
+cond do
+  a -> b
+  c -> d
+  true -> e
+end
+```
+
+This also helps Styler identify 2-clause conds that can be rewritten to `if/else` more readily, like the following:
+
+```elixir
+# before
+cond do
+  a -> b
+  :else -> c
+end
+
+# styled
+if a do
+  b
+else
+  c
+end
+```
+
+## 1.6.0
+
+That's right, a feature release again so soon!
+
+### Improvements
+
+This version of Styler adds many readability improvements around ExUnit `assert` and `refute`, specifically when working with 1. negations or 2. some `Enum` stdlib functions.
+
+Some of these rewrites are not semantically equivalent due to `refute` passing for both `nil` and `false`.
+
+#### ExUnit assert/refute rewrites
+
+Styler now inverts negated (`!, not`) assert/refute (eg `assert !x` => `refute x`) statements, and further inverts `refute` with boolean comparison operators (`refute x < y` => `assert x >= y`) because non-trivial refutes are harder to reason about \[ _citation needed_ ]. Asserting something is not nil is the same as just asserting that something, so that's gone too now.
+
+These changes are best summarized by the following table:
+
+| before              | styled            |
+|---------------------|-------------------|
+| `assert !x`         | `refute x`        |
+| `assert not x`      | `refute x`        |
+| `assert !!x`        | `assert x`        |
+| `assert x != nil`   | `assert x`        |
+| `assert x == nil`   | _no change_       |
+| `assert is_nil(x)`  | _no change_       |
+| `assert !is_nil(x)` | `assert x`        |
+| `assert x not in y` | `refute x in y`   |
+| refute negated      |                   |
+| `refute x`          | _no change_       |
+| `refute !x`         | `assert x`        |
+| `refute not x`      | `assert x`        |
+| `refute x != y`     | `assert x == y`   |
+| `refute x !== y`    | `assert x === y`  |
+| `refute x != nil`   | `assert x == nil` |
+| `refute x not in y` | `assert x in y`   |
+| refute comparison   |                   |
+| `refute x < y`      | `assert x >= y`   |
+| `refute x <= y`     | `assert x > y`    |
+| `refute x > y`      | `assert x <= y`   |
+| `refute x >= y`     | `assert x < y`    |
+
+- `assert Enum.member?(y, x)` -> `assert x in y`
+- `assert Enum.find(x, y)` -> `assert Enum.any?(x, y)` (nb. not semantically equivalent in theory, but equivalent in practice)
+- `assert Enum.any?(y, & &1 == x)` -> `assert x in y`
+- `assert Enum.any?(y, fn var -> var == x end)` -> `assert x in y`
+
+### Fixes
+
+- alias lifting: fix bug lifting in snippets with a single ast node at the root level (like a credo config file) (#240, h/t @defndaines)
+
+## 1.5.1
+
+### Fixes
+
+- alias lifting: handle comments in snippets with no existing directives (#239, h/t @kerryb)
+
+## 1.5.0
+
+### Improvements
+
+- apply aliases to code. if a module is aliased, and then later referenced with its full name, Styler will now shorten it to its alias. (#235, h/t me)
+- added `:minimum_supported_elixir_version` configuration to better support libraries using Styler (#231, h/t @maennchen)
+- `# styler:sort` will now sort keys for struct/map typespecs (#213, h/t @rojnwa)
+
+### Fixes
+
+- apply alias lifting to snippets with no modules or module directives in them. (#189, @h/t @halfdan)
+- fix de-sugaring of syntax-sugared keyword lists whose values weren't atoms in map values (#236, h/t @RisPNG)
+- fix mix config sorting mangling floating comment blocks in some cases (#230 again, h/t @ryoung786)
 
 ## 1.4.2
 

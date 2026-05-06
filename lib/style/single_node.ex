@@ -17,7 +17,6 @@ defmodule Styler.Style.SingleNode do
   * Credo.Check.Consistency.ParameterPatternMatching
   * Credo.Check.Readability.LargeNumbers
   * Credo.Check.Readability.ParenthesesOnZeroArityDefs
-  * Credo.Check.Readability.PreferImplicitTry
   * Credo.Check.Readability.StringSigils
   * Credo.Check.Readability.WithSingleClause
   * Credo.Check.Refactor.CaseTrivialMatches
@@ -37,6 +36,50 @@ defmodule Styler.Style.SingleNode do
 
   def run({node, meta}, ctx), do: {:cont, {style(node), meta}, ctx}
 
+  defp style({:assert, meta, [{:!=, _, [x, {:__block__, _, [nil]}]}]}), do: style({:assert, meta, [x]})
+  # refute nilly -> assert
+  defp style({:refute, meta, [{:is_nil, _, [x]}]}), do: style({:assert, meta, [x]})
+  defp style({:refute, meta, [{:==, _, [x, {:__block__, _, [nil]}]}]}), do: style({:assert, meta, [x]})
+  # boolean ops and assert hurt my brain.
+  # the lone exception is `==` (... for now) ((uh, and the exception to the exception is when it's `== nil`, above))
+  defp style({:refute, meta, [{:!=, m, xy}]}), do: style({:assert, meta, [{:==, m, xy}]})
+  defp style({:refute, meta, [{:!==, m, xy}]}), do: style({:assert, meta, [{:===, m, xy}]})
+  defp style({:refute, meta, [{:<, m, xy}]}), do: style({:assert, meta, [{:>=, m, xy}]})
+  defp style({:refute, meta, [{:<=, m, xy}]}), do: style({:assert, meta, [{:>, m, xy}]})
+  defp style({:refute, meta, [{:>, m, xy}]}), do: style({:assert, meta, [{:<=, m, xy}]})
+  defp style({:refute, meta, [{:>=, m, xy}]}), do: style({:assert, meta, [{:<, m, xy}]})
+
+  # `assert x not in y` reads more naturally than `refute x in y`, so leave it alone (and same for refute).
+  defp style({a, _, [{:not, _, [{:in, _, _}]}]} = node) when a in [:assert, :refute], do: node
+
+  for {a, inverted} <- [{:assert, :refute}, {:refute, :assert}] do
+    # invert negations
+    defp style({unquote(a), meta, [{n, _, [x]}]}) when n in [:!, :not], do: style({unquote(inverted), meta, [x]})
+
+    # assert Enum.member? -> assert in
+    defp style({unquote(a), meta, [{{:., _, [{:__aliases__, _, [:Enum]}, :member?]}, _, [enum, elem]}]}),
+      do: {unquote(a), meta, [{:in, [line: meta[:line]], [elem, enum]}]}
+
+    # assert Enum.find -> assert Enum.any?
+    defp style({unquote(a), meta, [{{:., a, [{:__aliases__, b, [:Enum]}, :find]}, c, [enum, fun]}]}),
+      do: style({unquote(a), meta, [{{:., a, [{:__aliases__, b, [:Enum]}, :any?]}, c, [enum, fun]}]})
+
+    # Enum.any?(x, & &1 == y) => y in x
+    defp style({unquote(a) = a, m, [{{:., _, [{:__aliases__, _, [:Enum]}, :any?]}, _, [y, fun]}]} = node) do
+      case fun do
+        # & &1 == x
+        {:&, _, [{:==, _, [{:&, _, [1]}, x]}]} -> {a, m, [{:in, [line: m[:line]], [x, y]}]}
+        # & x == &1
+        {:&, _, [{:==, _, [x, {:&, _, [1]}]}]} -> {a, m, [{:in, [line: m[:line]], [x, y]}]}
+        # fn var -> var == x
+        {:fn, _, [{:->, _, [[{var, _, nil}], {:==, _, [{var, _, nil}, x]}]}]} -> {a, m, [{:in, [line: m[:line]], [x, y]}]}
+        # fn var -> x == var
+        {:fn, _, [{:->, _, [[{var, _, nil}], {:==, _, [x, {var, _, nil}]}]}]} -> {a, m, [{:in, [line: m[:line]], [x, y]}]}
+        _ -> node
+      end
+    end
+  end
+
   # rewrite double-quote strings with >= 4 escaped double-quotes as sigils
   defp style({:__block__, [{:delimiter, ~s|"|} | meta], [string]} = node) when is_binary(string) do
     # running a regex against every double-quote delimited string literal in a codebase doesn't have too much impact
@@ -51,7 +94,7 @@ defmodule Styler.Style.SingleNode do
         |> Stream.concat(@closing_delimiters)
         |> Enum.frequencies()
         |> Enum.min_by(fn
-          {~s|"|, count} -> {count, 1}
+          {"\"", count} -> {count, 1}
           {")", count} -> {count, 2}
           {"}", count} -> {count, 3}
           {"|", count} -> {count, 4}
@@ -183,50 +226,54 @@ defmodule Styler.Style.SingleNode do
   defp style({:case, cm, [head, [{do_, arrows}]]}), do: {:case, cm, [head, [{do_, rewrite_arrows(arrows)}]]}
   defp style({:fn, m, arrows}), do: {:fn, m, rewrite_arrows(arrows)}
 
-  defp style({:to_timeout, meta, [[{{:__block__, um, [unit]}, {:*, _, [left, right]}}]]} = node)
-       when unit in ~w(day hour minute second millisecond)a do
-    [l, r] =
-      Enum.map([left, right], fn
-        {_, _, [x]} -> x
-        _ -> nil
-      end)
-
-    {step, next_unit} =
-      case unit do
-        :day -> {7, :week}
-        :hour -> {24, :day}
-        :minute -> {60, :hour}
-        :second -> {60, :minute}
-        :millisecond -> {1000, :second}
-      end
-
-    if step in [l, r] do
-      n = if l == step, do: right, else: left
-      style({:to_timeout, meta, [[{{:__block__, um, [next_unit]}, n}]]})
-    else
-      node
-    end
-  end
-
-  defp style({:to_timeout, meta, [[{{:__block__, um, [unit]}, {:__block__, tm, [n]}}]]} = node) do
-    step_up =
-      case {unit, n} do
-        {:day, 7} -> :week
-        {:hour, 24} -> :day
-        {:minute, 60} -> :hour
-        {:second, 60} -> :minute
-        {:millisecond, 1000} -> :second
-        _ -> nil
-      end
-
-    if step_up do
-      {:to_timeout, meta, [[{{:__block__, um, [step_up]}, {:__block__, [token: "1", line: tm[:line]], [1]}}]]}
-    else
-      node
-    end
-  end
+  defp style({:to_timeout, m, [[_ | _] = args]}), do: {:to_timeout, m, [Enum.map(args, &style_to_timeout_arg/1)]}
 
   defp style(node), do: node
+
+  # 1. convert plurals to singulars (`minutes` -> `minute`)
+  # 2. upgrade values, eg `minute: 5 * 60` -> `hour: 5` and `minute: 60` -> `hour: 1`
+  defp style_to_timeout_arg({{:__block__, m, [unit]}, value}) do
+    {unit, step, next_unit} =
+      case unit do
+        :day -> {:day, 7, :week}
+        :days -> {:day, 7, :week}
+        :hour -> {:hour, 24, :day}
+        :hours -> {:hour, 24, :day}
+        :millisecond -> {:millisecond, 1000, :second}
+        :milliseconds -> {:millisecond, 1000, :second}
+        :minute -> {:minute, 60, :hour}
+        :minutes -> {:minute, 60, :hour}
+        :second -> {:second, 60, :minute}
+        :seconds -> {:second, 60, :minute}
+        :week -> {:week, :"$no_next_step", nil}
+        :weeks -> {:week, :"$no_next_step", nil}
+        unit -> {unit, :"$no_next_step", nil}
+      end
+
+    {unit, value} =
+      case value do
+        # minute: 60 -> hours: 1
+        {:__block__, tm, [^step]} ->
+          {next_unit, {:__block__, [token: "1", line: tm[:line]], [1]}}
+
+        # minute: 60 * rhs -> hours: rhs
+        {:*, _, [{_, _, [^step]}, rhs]} ->
+          {{_, _, [next_unit]}, value} = style_to_timeout_arg({{:__block__, m, [next_unit]}, rhs})
+          {next_unit, value}
+
+        # minute: lhs * 60 -> hours: lhs
+        {:*, _, [lhs, {_, _, [^step]}]} ->
+          {{_, _, [next_unit]}, value} = style_to_timeout_arg({{:__block__, m, [next_unit]}, lhs})
+          {next_unit, value}
+
+        value ->
+          {unit, value}
+      end
+
+    {{:__block__, m, [unit]}, value}
+  end
+
+  defp style_to_timeout_arg(other), do: other
 
   defp replace_into({:., dm, [{_, am, _} = enum, _]}, collectable, rest) do
     case collectable do

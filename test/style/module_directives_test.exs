@@ -294,7 +294,7 @@ defmodule Styler.Style.ModuleDirectivesTest do
         alias A.A
         """,
         """
-        require A.A
+        require A
         require A.C
 
         alias A.A
@@ -407,7 +407,7 @@ defmodule Styler.Style.ModuleDirectivesTest do
     )
   end
 
-  test "de-aliases use/behaviour/import/moduledoc" do
+  test "expands use/behaviour/import/moduledoc aliases" do
     assert_style(
       """
       defmodule MyModule do
@@ -445,7 +445,7 @@ defmodule Styler.Style.ModuleDirectivesTest do
   end
 
   describe "module attribute lifting" do
-    test "replaces uses in other attributes and `use` correctly" do
+    test "maintains location when used in other spots" do
       assert_style(
         """
         defmodule MyGreatLibrary do
@@ -455,15 +455,214 @@ defmodule Styler.Style.ModuleDirectivesTest do
         end
         """,
         """
-        library_options = [...]
-
         defmodule MyGreatLibrary do
-          @moduledoc make_pretty_docs(library_options)
+          @library_options [...]
+          @moduledoc make_pretty_docs(@library_options)
 
-          use OptionsMagic, my_opts: library_options
-
-          @library_options library_options
+          use OptionsMagic, my_opts: @library_options
         end
+        """
+      )
+    end
+
+    test "interdepedent module attrs" do
+      assert_style(
+        """
+        defmodule MyGreatLibrary do
+          @foo :bar
+          import Meow
+          @library_options @foo
+          @moduledoc make_pretty_docs(@library_options)
+          use OptionsMagic, my_opts: @library_options
+        end
+        """,
+        """
+        defmodule MyGreatLibrary do
+          @foo :bar
+          @library_options @foo
+          @moduledoc make_pretty_docs(@library_options)
+
+          use OptionsMagic, my_opts: @library_options
+
+          import Meow
+        end
+        """
+      )
+    end
+
+    test "works with `quote`" do
+      assert_style(
+        """
+        quote do
+          @library_options [...]
+          @moduledoc make_pretty_docs(@library_options)
+          use OptionsMagic, my_opts: @library_options
+        end
+        """,
+        """
+        quote do
+          @library_options [...]
+          @moduledoc make_pretty_docs(@library_options)
+
+          use OptionsMagic, my_opts: @library_options
+        end
+        """
+      )
+    end
+  end
+
+  describe "apply aliases" do
+    test "replaces known aliases" do
+      assert_style(
+        """
+        alias A.B
+        alias A.B.C
+        alias A.B.C.D, as: X
+
+        A.B.foo()
+        A.B.C.foo()
+        A.B.C.D.woo()
+        C.D.woo()
+        """,
+        """
+        alias A.B
+        alias A.B.C
+        alias A.B.C.D, as: X
+
+        B.foo()
+        C.foo()
+        X.woo()
+        X.woo()
+        """
+      )
+    end
+
+    test "ignores quotes" do
+      assert_style(
+        """
+        alias A.B.C
+
+        A.B.C
+
+        quote do
+          A.B.C
+        end
+        """,
+        """
+        alias A.B.C
+
+        C
+
+        quote do
+          A.B.C
+        end
+        """
+      )
+    end
+
+    test "removes embedded duplicate aliases" do
+      assert_style(
+        """
+        alias A.B
+
+        def foo do
+          alias A.B
+          A.B.bar()
+        end
+        """,
+        """
+        alias A.B
+
+        def foo do
+          B.bar()
+        end
+        """
+      )
+    end
+
+    test "doesn't rewrite the LHS of `alias X, as: Y` directives" do
+      # exact-match dedup: inner `alias` is the same module + same `as` as outer, so it's removed
+      assert_style(
+        """
+        defmodule Outer do
+          @moduledoc false
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+            alias Foo.Bar.Baz, as: BazSchema
+
+            def x, do: BazSchema
+          end
+        end
+        """,
+        """
+        defmodule Outer do
+          @moduledoc false
+
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+
+            def x, do: BazSchema
+          end
+        end
+        """
+      )
+
+      # different `as`: inner alias stays put and its LHS is left alone
+      assert_style(
+        """
+        defmodule Outer do
+          @moduledoc false
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+            alias Foo.Bar.Baz, as: SomethingElse
+
+            def x, do: SomethingElse
+          end
+        end
+        """,
+        """
+        defmodule Outer do
+          @moduledoc false
+
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+
+            alias Foo.Bar.Baz, as: SomethingElse
+
+            def x, do: SomethingElse
+          end
+        end
+        """
+      )
+    end
+
+    test "forces a single alias" do
+      assert_style(
+        """
+        alias A.B.C.D.E, as: B
+        alias A.B.C.D.E, as: C
+        alias A.B.C.D.E
+
+        B
+        C
+        E
+        """,
+        """
+        alias A.B.C.D.E
+        alias A.B.C.D.E, as: B
+        alias A.B.C.D.E, as: C
+
+        C
+        C
+        C
         """
       )
     end

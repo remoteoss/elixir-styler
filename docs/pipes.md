@@ -1,6 +1,4 @@
-## Pipe Chains
-
-### Pipe Start
+## Pipe Start
 
 Styler will ensure that the start of a pipechain is a 0-arity function, a raw value, or a variable.
 
@@ -38,7 +36,7 @@ if_result
 |> IO.inspect()
 ```
 
-### Add parenthesis to function calls in pipes
+## Add parenthesis to function calls in pipes
 
 ```elixir
 a |> b |> c |> d
@@ -46,17 +44,7 @@ a |> b |> c |> d
 a |> b() |> c() |> d()
 ```
 
-### Remove Unnecessary `then/2`
-
-When the piped argument is being passed as the first argument to the inner function, there's no need for `then/2`.
-
-```elixir
-a |> then(&f(&1, ...)) |> b()
-# Styled:
-a |> f(...) |> b()
-```
-
-- add parens to function calls `|> fun |>` => `|> fun() |>`
+## `then/2` improvements
 
 ### Add `then/2` when defining and calling anonymous functions in pipes
 
@@ -66,7 +54,17 @@ a |> (fn x -> x end).() |> c()
 a |> then(fn x -> x end) |> c()
 ```
 
-### Piped function optimizations
+### Remove Redundant `then/2`
+
+When the piped argument is being passed as the first argument to the inner function, there's no need for `then/2`.
+
+```elixir
+a |> then(&f(&1, ...)) |> b()
+# Styled:
+a |> f(...) |> b()
+```
+
+## Optimizations
 
 Two function calls into one! Fewer steps is always nice.
 
@@ -105,7 +103,44 @@ a |> b() |> Stream.map(fun) |> Stream.run()
 # Styled:
 a |> b() |> Enum.each(fun)
 a |> b() |> Enum.each(fun)
+
+# Given:
+a |> Enum.filter(fun) |> List.first() |> ...
+a |> Enum.filter(fun) |> List.first(default) |> ...
+# Styled:
+a |> Enum.find(fun) |> ...
+a |> Enum.find(default, fun) |> ...
+
+# Given:
+a |> Enum.sort() |> Enum.reverse() |> ...
+a |> Enum.sort(:desc) |> ...
+
+# Given:
+a |> Enum.map(fun) |> Enum.intersperse(separator) |> ...
+a |> Enum.map_intersperse(separator, fun) |> ...
 ```
+
+### Req Optimizations
+
+[Req](https://github.com/wojtekmach/req) is a popular HTTP Client. If you aren't using it, you can just ignore this whole section!
+
+Styler ensures a minimal number of functions are being called when using any Req 1-arity execution functions (`delete get head patch post put request run` and their bangified versions).
+
+```elixir
+# before
+keyword |> Req.new() |> Req.merge(opts) |> Req.post!()
+# Styled:
+Req.post!(keyword, opts)
+
+# before
+foo |> Keyword.merge(opts) |> Req.head()
+# Styled:
+Req.head(foo, opts)
+```
+
+**This changes the program's behaviour**, since `Keyword.merge` would overwrite existing values in all cases, whereas `Req` 2-arity functions intelligently deep-merge values for some keys, like `:headers`.
+
+## Adding & Removing Pipes
 
 ### Unpiping Single Pipes
 
@@ -128,5 +163,23 @@ If the first argument to a function call is a pipe, Styler makes the function ca
 ```elixir
 d(a |> b |> c)
 # Styled
+a |> b() |> c() |> d()
+```
+
+Styler does not pipe-ify nested function calls if there are no pipes:
+
+```elixir
+# Styler does not change this
+d(c(b(a))
+```
+
+If you want Styler to do the work of transforming nested function calls into a pipe for you, change the innermost function call to a pipe, then format. Styler will take care of the rest.
+
+```elixir
+# To have Styler change this to pipes
+d(c(b(a))
+# You will have to add a single pipe to the innermost function call, like so:
+d(c(a |> b))
+# At which point Styler will pipe-ify the entire chain
 a |> b() |> c() |> d()
 ```
