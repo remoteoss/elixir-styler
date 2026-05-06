@@ -18,7 +18,7 @@ defmodule Styler.Style.SingleNodeTest do
       assert_style "assert !x", "refute x"
       assert_style "assert not x", "refute x"
       assert_style "assert !is_nil(x)", "assert x"
-      assert_style "assert x not in y", "refute x in y"
+      assert_style "assert x not in y"
 
       assert_style "assert nil == nil", "assert nil == nil"
       assert_style "assert nil != nil", "assert nil"
@@ -28,7 +28,7 @@ defmodule Styler.Style.SingleNodeTest do
       assert_style "refute x != nil", "assert x == nil"
       assert_style "refute !x", "assert x"
       assert_style "refute not x", "assert x"
-      assert_style "refute x not in y", "assert x in y"
+      assert_style "refute x not in y"
 
       assert_style "assert x == nil"
       assert_style "assert is_nil(x)"

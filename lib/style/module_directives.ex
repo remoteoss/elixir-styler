@@ -456,6 +456,13 @@ defmodule Styler.Style.ModuleDirectives do
         zipper = if to_as[modules], do: Zipper.remove(zipper), else: zipper
         {:cont, zipper}
 
+      # `alias Foo.Bar.Baz, as: Whatever` - never rewrite the LHS through application,
+      # otherwise we'd produce nonsense like `alias Whatever, as: Whatever`.
+      # only dedup when the inner alias is an exact duplicate of one defined further up.
+      {{:alias, _, [{:__aliases__, _, [_ | _] = modules}, [{_, {:__aliases__, _, [as]}}]]}, _} = zipper ->
+        zipper = if to_as[modules] == as, do: Zipper.remove(zipper), else: zipper
+        {:skip, zipper}
+
       # We check even modules of 1 length to catch silly situations like
       # alias A.B.C
       # alias A.B.C, as: X

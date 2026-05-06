@@ -49,6 +49,9 @@ defmodule Styler.Style.SingleNode do
   defp style({:refute, meta, [{:>, m, xy}]}), do: style({:assert, meta, [{:<=, m, xy}]})
   defp style({:refute, meta, [{:>=, m, xy}]}), do: style({:assert, meta, [{:<, m, xy}]})
 
+  # `assert x not in y` reads more naturally than `refute x in y`, so leave it alone (and same for refute).
+  defp style({a, _, [{:not, _, [{:in, _, _}]}]} = node) when a in [:assert, :refute], do: node
+
   for {a, inverted} <- [{:assert, :refute}, {:refute, :assert}] do
     # invert negations
     defp style({unquote(a), meta, [{n, _, [x]}]}) when n in [:!, :not], do: style({unquote(inverted), meta, [x]})

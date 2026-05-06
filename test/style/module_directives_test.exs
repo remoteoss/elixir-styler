@@ -580,6 +580,70 @@ defmodule Styler.Style.ModuleDirectivesTest do
       )
     end
 
+    test "doesn't rewrite the LHS of `alias X, as: Y` directives" do
+      # exact-match dedup: inner `alias` is the same module + same `as` as outer, so it's removed
+      assert_style(
+        """
+        defmodule Outer do
+          @moduledoc false
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+            alias Foo.Bar.Baz, as: BazSchema
+
+            def x, do: BazSchema
+          end
+        end
+        """,
+        """
+        defmodule Outer do
+          @moduledoc false
+
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+
+            def x, do: BazSchema
+          end
+        end
+        """
+      )
+
+      # different `as`: inner alias stays put and its LHS is left alone
+      assert_style(
+        """
+        defmodule Outer do
+          @moduledoc false
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+            alias Foo.Bar.Baz, as: SomethingElse
+
+            def x, do: SomethingElse
+          end
+        end
+        """,
+        """
+        defmodule Outer do
+          @moduledoc false
+
+          alias Foo.Bar.Baz, as: BazSchema
+
+          defmodule Inner do
+            @moduledoc false
+
+            alias Foo.Bar.Baz, as: SomethingElse
+
+            def x, do: SomethingElse
+          end
+        end
+        """
+      )
+    end
+
     test "forces a single alias" do
       assert_style(
         """
