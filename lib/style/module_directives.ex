@@ -59,7 +59,8 @@ defmodule Styler.Style.ModuleDirectives do
     require: [],
     nondirectives: [],
     alias_env: %{},
-    attrs: MapSet.new()
+    attrs: MapSet.new(),
+    lifting_disabled?: false
   }
 
   # module directives typically doesn't do anything until it sees a module (typical .ex file) or a directive (like a snippet)
@@ -71,11 +72,13 @@ defmodule Styler.Style.ModuleDirectives do
   def run(zipper, %{__MODULE__ => true} = ctx), do: do_run(zipper, ctx)
 
   def run({node, nil} = zipper, ctx) do
+    ctx = Map.put(ctx, :lifting_disabled?, Enum.any?(ctx.comments, &(&1.text == "# styler:disable_alias_lifting")))
+
     if interesting_zipper = Zipper.find(zipper, &match?({x, _, _} when x in [:defmodule, :@ | @directives], &1)) do
       do_run(interesting_zipper, Map.put(ctx, __MODULE__, true))
     else
       # there's no defmodules or aliasy things - see if we can do some alias lifting?
-      case lift_aliases(%{@env | nondirectives: [node]}) do
+      case lift_aliases(%{@env | nondirectives: [node], lifting_disabled?: ctx.lifting_disabled?}) do
         %{alias: []} ->
           {:halt, zipper, ctx}
 
@@ -120,7 +123,7 @@ defmodule Styler.Style.ModuleDirectives do
         # we want only-child literal block to be handled in the only-child catch-all. it means someone did a weird
         # (that would be a literal, so best case someone wrote a string and forgot to put `@moduledoc` before it)
         {:__block__, _, [_, _ | _]} ->
-          {:skip, organize_directives(body_zipper, moduledoc), ctx}
+          {:skip, organize_directives(body_zipper, ctx, moduledoc), ctx}
 
         # a module whose only child is a moduledoc. nothing to do here!
         # seems weird at first blush but lots of projects/libraries do this with their root namespace module
@@ -133,7 +136,7 @@ defmodule Styler.Style.ModuleDirectives do
             zipper =
               body_zipper
               |> Zipper.replace({:__block__, [], [moduledoc, only_child]})
-              |> organize_directives()
+              |> organize_directives(ctx)
 
             {:skip, zipper, ctx}
           else
@@ -147,7 +150,7 @@ defmodule Styler.Style.ModuleDirectives do
   defp do_run({{directive, _, children}, _} = zipper, ctx) when directive in @directives and is_list(children) do
     # Need to be careful that we aren't getting false positives on variables or fns like `def import(foo)` or `alias = 1`
     case Style.ensure_block_parent(zipper) do
-      {:ok, zipper} -> {:skip, zipper |> Zipper.up() |> organize_directives(), ctx}
+      {:ok, zipper} -> {:skip, zipper |> Zipper.up() |> organize_directives(ctx), ctx}
       # not actually a directive! carry on.
       :error -> {:cont, zipper, ctx}
     end
@@ -193,11 +196,11 @@ defmodule Styler.Style.ModuleDirectives do
     end
   end
 
-  defp organize_directives(parent, moduledoc \\ nil) do
+  defp organize_directives(parent, ctx, moduledoc \\ nil) do
     acc =
       parent
       |> Zipper.children()
-      |> Enum.reduce(@env, fn
+      |> Enum.reduce(%{@env | lifting_disabled?: ctx.lifting_disabled?}, fn
         {:@, _, [{attr_directive, _, _}]} = ast, acc when attr_directive in @attr_directives ->
           # attr_directives are moved above aliases, so we need to expand them
           ast = AliasEnv.expand_ast(acc.alias_env, ast)
@@ -226,6 +229,7 @@ defmodule Styler.Style.ModuleDirectives do
         {:use, uses} -> {:use, uses |> Enum.reverse() |> Style.reset_newlines()}
         {directive, to_sort} when directive in ~w(behaviour import alias require)a -> {directive, sort(to_sort)}
         {:alias_env, d} -> {:alias_env, d}
+        {:lifting_disabled?, d} -> {:lifting_disabled?, d}
         {k, v} -> {k, Enum.reverse(v)}
       end)
       |> redefine_alias_env()
@@ -264,6 +268,8 @@ defmodule Styler.Style.ModuleDirectives do
 
   # alias_env have to be recomputed after we've sorted our `alias` nodes
   defp redefine_alias_env(%{alias: aliases} = acc), do: %{acc | alias_env: AliasEnv.define(aliases)}
+
+  defp lift_aliases(%{lifting_disabled?: true} = acc), do: acc
 
   defp lift_aliases(%{alias: aliases, require: requires, nondirectives: nondirectives, alias_env: alias_env} = acc) do
     liftable = find_liftable_aliases(requires ++ nondirectives, alias_env)
