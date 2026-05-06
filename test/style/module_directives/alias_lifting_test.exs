@@ -606,4 +606,83 @@ defmodule Styler.Style.ModuleDirectives.AliasLiftingTest do
       """
     end
   end
+
+  describe "# styler:disable_alias_lifting" do
+    test "skips lifting when set" do
+      assert_style """
+      # styler:disable_alias_lifting
+      defmodule A do
+        @moduledoc false
+
+        Foo.Bar.Baz.bop()
+        Foo.Bar.Baz.bop()
+      end
+      """
+    end
+
+    test "still applies existing aliases when lifting is disabled" do
+      assert_style(
+        """
+        # styler:disable_alias_lifting
+        defmodule A do
+          @moduledoc false
+          alias Foo.Bar.Baz
+
+          Foo.Bar.Baz.bop()
+          Foo.Bar.Baz.bop()
+        end
+        """,
+        """
+        # styler:disable_alias_lifting
+        defmodule A do
+          @moduledoc false
+
+          alias Foo.Bar.Baz
+
+          Baz.bop()
+          Baz.bop()
+        end
+        """
+      )
+    end
+
+    test "comment can sit anywhere in the file" do
+      assert_style """
+      defmodule A do
+        @moduledoc false
+
+        # styler:disable_alias_lifting
+        Foo.Bar.Baz.bop()
+        Foo.Bar.Baz.bop()
+      end
+      """
+    end
+
+    test "applies file-wide, including nested defmodules" do
+      assert_style """
+      # styler:disable_alias_lifting
+      defmodule A do
+        @moduledoc false
+
+        Foo.Bar.Baz.bop()
+        Foo.Bar.Baz.bop()
+
+        defmodule Inner do
+          @moduledoc false
+
+          Quux.Quuz.Quoz.bop()
+          Quux.Quuz.Quoz.bop()
+        end
+      end
+      """
+    end
+
+    test "applies in snippets without a defmodule" do
+      assert_style """
+      # styler:disable_alias_lifting
+      Foo.Bar.Baz.bop()
+      Foo.Bar.Baz.bop()
+      """
+    end
+  end
 end

@@ -183,6 +183,20 @@ You can specify additional modules to exclude from lifting via the `:alias_lifti
 ]
 ```
 
+### Per-File Opt-Out
+
+Drop a `# styler:disable_alias_lifting` comment anywhere in a file to skip alias lifting for that file. Existing aliases are still applied — only the auto-creation of new aliases is suppressed.
+
+```elixir
+# styler:disable_alias_lifting
+defmodule MyApp.Some.Ignore do
+  @moduledoc false
+
+  Foo.Bar.Baz.bop()
+  Foo.Bar.Baz.bop()
+end
+```
+
 ## Alias Application
 
 Styler applies aliases in those cases where a developer wrote out a full module name without realizing that the module is already aliased.
