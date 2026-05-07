@@ -656,7 +656,7 @@ defmodule Styler.Style.PipesTest do
       )
     end
 
-    test "FilterFilter: combines captures and inline predicates" do
+    test "FilterFilter: inlines captures and inline-fn predicates" do
       assert_style(
         """
         list
@@ -664,9 +664,44 @@ defmodule Styler.Style.PipesTest do
         |> Enum.filter(fn s -> String.contains?(s, "a") end)
         """,
         """
-        Enum.filter(list, fn item -> (&String.contains?(&1, "x")).(item) && (fn s -> String.contains?(s, "a") end).(item) end)
+        Enum.filter(list, fn item -> String.contains?(item, "x") && String.contains?(item, "a") end)
         """
       )
+    end
+
+    test "RejectFilter: inlines `&fun/1` style captures" do
+      assert_style(
+        """
+        list
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(&is_map/1)
+        """,
+        """
+        Enum.filter(list, fn item -> not is_nil(item) && is_map(item) end)
+        """
+      )
+    end
+
+    test "FilterFilter / RejectFilter: skips rewrite when a predicate has a multi-statement fn body" do
+      # The collapsed lambda would be uglier than the original chain — leave it alone.
+      assert_style("""
+      schema_modules
+      |> Enum.reject(&(&1 in context.ignore_list))
+      |> Enum.filter(fn schema_module ->
+        schema = schema_module.schema()
+        schema_title = schema.title
+        not is_nil(schema.example) and not MapSet.member?(set, schema_title)
+      end)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.filter(fn x ->
+        y = x.a
+        y > 0
+      end)
+      |> Enum.filter(f2)
+      """)
     end
 
     test "FilterFilter: leaves non-Enum.filter chains alone" do
