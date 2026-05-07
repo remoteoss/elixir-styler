@@ -20,9 +20,12 @@ defmodule Styler.Style.Pipes do
     * Credo.Check.Readability.SinglePipe
     * Credo.Check.Refactor.FilterCount
     * Credo.Check.Refactor.FilterFilter
+    * Credo.Check.Refactor.FilterReject
     * Credo.Check.Refactor.MapInto
     * Credo.Check.Refactor.MapJoin
+    * Credo.Check.Refactor.MapMap
     * Credo.Check.Refactor.PipeChainStart, excluded_functions: ["from"]
+    * Credo.Check.Refactor.RejectFilter
     * Credo.Check.Refactor.RejectReject
   """
 
@@ -393,6 +396,59 @@ defmodule Styler.Style.Pipes do
        ),
        do: {:|>, pm, [lhs, {reject, fm, [combined_predicate(f1, f2, :||, fm)]}]}
 
+  # `lhs |> Enum.filter(f1) |> Enum.reject(f2)` => `lhs |> Enum.filter(fn item -> f1.(item) && !f2.(item) end)`
+  # (Credo.Check.Refactor.FilterReject)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :filter]} = filter, fm, [f1]},
+           {{:., _, [{_, _, [:Enum]}, :reject]}, _, [f2]}
+         )
+       ),
+       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm, negate_f2: true)]}]}
+
+  # `lhs |> Enum.reject(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> !f1.(item) && f2.(item) end)`
+  # The merged call collapses to `Enum.filter` (as Credo recommends) — `f1` was the original reject,
+  # so we negate it; `f2` was the original filter, so it stays.
+  # (Credo.Check.Refactor.RejectFilter)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :reject]}, fm, [f1]},
+           {{:., _, [{_, _, [:Enum]}, :filter]} = filter, _, [f2]}
+         )
+       ),
+       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm, negate_f1: true)]}]}
+
+  # `lhs |> Enum.map(f1) |> Enum.map(f2)` => single `Enum.map` whose body is the inlined nested call. We seed the body
+  # with a one-step pipe inside f1's slot - Styler's existing `f(pipe, args)` walk then unfolds the f2 call into the
+  # rest of the pipe chain. If either side can't be cleanly inlined, f1 doesn't pipify (e.g. it inlined to an operator),
+  # or f2 doesn't put its placeholder in position 1 (so the seed pipe wouldn't unfold), skip — leaving the original
+  # two-map chain. (Credo.Check.Refactor.MapMap)
+  defp fix_pipe(
+         pipe_chain(
+           pm,
+           lhs,
+           {{:., _, [{_, _, [:Enum]}, :map]} = map, fm, [f1]},
+           {{:., _, [{_, _, [:Enum]}, :map]}, _, [f2]}
+         ) = node
+       ) do
+    with true <- inlineable?(f1) and inlineable?(f2) and placeholder_in_first_position?(f2),
+         item_name = iteration_var_name(f1, f2),
+         false <- shadows_free_var?(item_name, f1, f2),
+         item = {item_name, [line: fm[:line]], nil},
+         inlined_f1 = inline_capture(f1, item, fm[:line]),
+         {:|>, _, _} = f1_seed <- pipify(inlined_f1) do
+      body = inline_capture(f2, f1_seed, fm[:line])
+      lambda = {:fn, [closing: [line: fm[:line]], line: fm[:line]], [{:->, [line: fm[:line]], [[item], body]}]}
+      {:|>, pm, [lhs, {map, fm, [lambda]}]}
+    else
+      _ -> node
+    end
+  end
+
   # `lhs |> Stream.map(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
   # `lhs |> Stream.each(fun) |> Stream.run()` => `lhs |> Enum.each(fun)`
   defp fix_pipe(
@@ -504,15 +560,207 @@ defmodule Styler.Style.Pipes do
 
   # Combines two 1-arity predicates into a single anonymous function: `fn item -> f1.(item) <op> f2.(item) end`.
   # Universal form that's correct regardless of whether each predicate is a capture, an `&(...)` shortform,
-  # or an explicit `fn x -> ... end`. Used by FilterFilter (op: `&&`) and RejectReject (op: `||`).
-  defp combined_predicate(f1, f2, op, m) do
+  # or an explicit `fn x -> ... end`. Used by FilterFilter (op: `&&`), RejectReject (op: `||`), and
+  # the mixed FilterReject / RejectFilter rules (op: `&&` with one side wrapped in `!`).
+  defp combined_predicate(f1, f2, op, m, opts \\ []) do
     line = m[:line]
     item = {:item, [line: line], nil}
-    body = {op, [line: line], [predicate_call(f1, item, line), predicate_call(f2, item, line)]}
+    call_f1 = maybe_negate(predicate_call(f1, item, line), opts[:negate_f1] == true, line)
+    call_f2 = maybe_negate(predicate_call(f2, item, line), opts[:negate_f2] == true, line)
+    body = {op, [line: line], [call_f1, call_f2]}
     {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
   end
+
+  defp maybe_negate(call, true, line), do: {:!, [line: line], [call]}
+  defp maybe_negate(call, false, _line), do: call
 
   defp predicate_call(fun, arg, line) do
     {{:., [line: line], [fun]}, [closing: [line: line], line: line], [arg]}
   end
+
+  # &Mod.fun/1 → Mod.fun(arg). The `:closing` meta is what tells Styler's `f(pipe, args)` rule
+  # this is a real call (not a macro) and is safe to pipify.
+  defp inline_capture(
+         {:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, mods}, name]}, _, []}, {:__block__, _, [1]}]}]},
+         arg,
+         line
+       ) do
+    {{:., [line: line], [{:__aliases__, [line: line], mods}, name]}, [closing: [line: line], line: line], [arg]}
+  end
+
+  # &fun/1 → fun(arg)
+  defp inline_capture({:&, _, [{:/, _, [{name, _, ctx}, {:__block__, _, [1]}]}]}, arg, line)
+       when is_atom(name) and is_atom(ctx) do
+    {name, [closing: [line: line], line: line], [arg]}
+  end
+
+  # &expr — safe to inline iff `&1` appears exactly once, no `&n` for n > 1, and there are
+  # no nested `&(...)` capture forms in the body (their `&1`s belong to a different scope).
+  defp inline_capture({:&, _, [body]}, arg, _line) do
+    case placeholder_uses(body) do
+      {1, false, false} -> substitute_placeholder(body, arg)
+      _ -> nil
+    end
+  end
+
+  # `fn x -> body end` — safe to inline iff `x` appears exactly once in body, no nested `fn`/`&`
+  # could shadow it, and `x` isn't `_` (which we'd be substituting into ignore-position).
+  defp inline_capture({:fn, _, [{:->, _, [[{name, _, ctx}], body]}]}, arg, _line)
+       when is_atom(name) and is_atom(ctx) and name != :_ do
+    case fn_var_uses(body, name) do
+      {1, false} -> substitute_fn_var(body, name, arg)
+      _ -> nil
+    end
+  end
+
+  defp inline_capture(_, _, _), do: nil
+
+  # Mirrors the inline_capture clauses above — returns true exactly when inline_capture would succeed.
+  defp inlineable?({:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, _}, _]}, _, []}, {:__block__, _, [1]}]}]}), do: true
+
+  defp inlineable?({:&, _, [{:/, _, [{name, _, ctx}, {:__block__, _, [1]}]}]}) when is_atom(name) and is_atom(ctx),
+    do: true
+
+  defp inlineable?({:&, _, [body]}), do: match?({1, false, false}, placeholder_uses(body))
+
+  defp inlineable?({:fn, _, [{:->, _, [[{name, _, ctx}], body]}]}) when is_atom(name) and is_atom(ctx) and name != :_,
+    do: match?({1, false}, fn_var_uses(body, name))
+
+  defp inlineable?(_), do: false
+
+  # If either side is an inline `fn x -> ...`, prefer that var name for the merged lambda - the source already named the
+  # iteration value. Prefer f1's name when both are named. Otherwise, fall back to `arg1`.
+  defp iteration_var_name(f1, f2), do: fn_var_name(f1) || fn_var_name(f2) || :arg1
+
+  defp fn_var_name({:fn, _, [{:->, _, [[{name, _, ctx}], _]}]}) when is_atom(name) and is_atom(ctx) and name != :_,
+    do: name
+
+  defp fn_var_name(_), do: nil
+
+  # The merged lambda introduces a fresh binding for `name`. If that same name appears as a free variable in either
+  # side's body, it referred to a closure binding in the source - after merging, the new lambda's parameter would shadow
+  # it, silently changing semantics. Conservatively report any reference to `name` outside the side's own parameter as a
+  # shadow risk; refs inside a nested `fn`/`&` are technically rebindable but `inlineable?` already rejects most such
+  # cases.
+  defp shadows_free_var?(name, f1, f2), do: free_var_in?(name, f1) or free_var_in?(name, f2)
+
+  defp free_var_in?(name, {:fn, _, [{:->, _, [[{param, _, ctx}], body]}]}) when is_atom(param) and is_atom(ctx),
+    do: param != name and var_in_ast?(body, name)
+
+  defp free_var_in?(name, {:&, _, [body]}), do: var_in_ast?(body, name)
+  defp free_var_in?(_, _), do: false
+
+  defp var_in_ast?(ast, name) do
+    {_, found} =
+      Macro.prewalk(ast, false, fn
+        node, true -> {node, true}
+        {var, _, ctx} = node, false when var == name and is_atom(ctx) -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
+
+  # The seed-pipe trick only unfolds when f2's placeholder lands in arg position 1 of an outer call.
+  # If it lands in position 2+, we'd produce something like `Mod.fun(other, pipe)`, which Styler's
+  # `f(pipe, args)` rule won't touch and leaves an awkward partial pipe stranded inside an arg list.
+  defp placeholder_in_first_position?({:&, _, [{:/, _, _}]}), do: true
+
+  defp placeholder_in_first_position?({:&, _, [{name, _, [{:&, _, [1]} | _]}]})
+       when is_atom(name) and name not in @special_ops,
+       do: true
+
+  defp placeholder_in_first_position?({:&, _, [{{:., _, _}, _, [{:&, _, [1]} | _]}]}), do: true
+
+  defp placeholder_in_first_position?({:fn, _, [{:->, _, [[{name, _, ctx}], {fname, _, [{var, _, vctx} | _]}]}]})
+       when is_atom(name) and is_atom(ctx) and name != :_ and var == name and is_atom(vctx) and is_atom(fname) and
+              fname not in @special_ops,
+       do: true
+
+  defp placeholder_in_first_position?({:fn, _, [{:->, _, [[{name, _, ctx}], {{:., _, _}, _, [{var, _, vctx} | _]}]}]})
+       when is_atom(name) and is_atom(ctx) and name != :_ and var == name and is_atom(vctx),
+       do: true
+
+  defp placeholder_in_first_position?(_), do: false
+
+  defp fn_var_uses(ast, name) do
+    {_, acc} =
+      Macro.prewalk(ast, {0, false}, fn
+        {:fn, _, _} = node, {count, _} ->
+          {node, {count, true}}
+
+        {:&, _, _} = node, {count, _} ->
+          {node, {count, true}}
+
+        {var, _, ctx} = node, {count, has_nested} when var == name and is_atom(ctx) ->
+          {node, {count + 1, has_nested}}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
+  # Mirrors substitute_placeholder/2 — replace the var without descending into substituted `arg` or
+  # into nested `fn`/`&` (which have their own scoping).
+  defp substitute_fn_var({:fn, _, _} = node, _name, _arg), do: node
+  defp substitute_fn_var({:&, _, _} = node, _name, _arg), do: node
+  defp substitute_fn_var({var, _, ctx}, name, arg) when var == name and is_atom(ctx), do: arg
+
+  defp substitute_fn_var({a, m, args}, name, arg) when is_list(args),
+    do: {substitute_fn_var(a, name, arg), m, Enum.map(args, &substitute_fn_var(&1, name, arg))}
+
+  defp substitute_fn_var({a, b}, name, arg), do: {substitute_fn_var(a, name, arg), substitute_fn_var(b, name, arg)}
+
+  defp substitute_fn_var(list, name, arg) when is_list(list), do: Enum.map(list, &substitute_fn_var(&1, name, arg))
+
+  defp substitute_fn_var(other, _name, _arg), do: other
+
+  # Convert a nested function-call AST (e.g. `f(g(h(x), y), z)`) into pipe form (`x |> h(y) |> g(z) |> f()`).
+  # Stops at non-call nodes, at operator atoms (`arg + 1` shouldn't become `arg |> +(1)`), and at
+  # already-piped subtrees (which are already in the desired shape).
+  defp pipify({:|>, _, _} = pipe), do: pipe
+
+  defp pipify({{:., _, _} = dot, m, [first | rest]}), do: {:|>, [line: m[:line]], [pipify(first), {dot, m, rest}]}
+
+  defp pipify({name, m, [first | rest]}) when is_atom(name) and is_list(rest) and name not in @special_ops,
+    do: {:|>, [line: m[:line]], [pipify(first), {name, m, rest}]}
+
+  defp pipify(other), do: other
+
+  # Returns `{count_of_&1, saw_higher_index?, saw_nested_capture?}`. The third flag prevents us
+  # from inlining cases where the body contains a nested `&(...)` — its `&1`s are scoped to that
+  # inner capture, not to the body we're inlining.
+  defp placeholder_uses(ast) do
+    {_, acc} =
+      Macro.prewalk(ast, {0, false, false}, fn
+        {:&, _, [n]} = node, {count, higher, has_capture} when is_integer(n) ->
+          if n == 1,
+            do: {node, {count + 1, higher, has_capture}},
+            else: {node, {count, true, has_capture}}
+
+        {:&, _, [_body]} = node, {count, higher, _} ->
+          {node, {count, higher, true}}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
+  # Replaces every `&1` in `ast` with `arg`, *without* descending into the substituted-in `arg`
+  # (whose `&1`s, if any, are not in our scope) or into nested `&(...)` capture forms.
+  defp substitute_placeholder({:&, _, [1]}, arg), do: arg
+  defp substitute_placeholder({:&, _, _} = capture, _arg), do: capture
+
+  defp substitute_placeholder({a, m, args}, arg) when is_list(args),
+    do: {substitute_placeholder(a, arg), m, Enum.map(args, &substitute_placeholder(&1, arg))}
+
+  defp substitute_placeholder({a, b}, arg), do: {substitute_placeholder(a, arg), substitute_placeholder(b, arg)}
+
+  defp substitute_placeholder(list, arg) when is_list(list), do: Enum.map(list, &substitute_placeholder(&1, arg))
+
+  defp substitute_placeholder(other, _arg), do: other
 end

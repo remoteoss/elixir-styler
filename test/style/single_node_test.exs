@@ -413,6 +413,38 @@ defmodule Styler.Style.SingleNodeTest do
       assert_style("foo == 0")
       assert_style("Enum.count(x, fun) == 0")
     end
+
+    test "rewrites `String.length(x) <op> 0|1` to comparisons against `\"\"`" do
+      assert_style(~s|String.length(s) == 0|, ~s|s == ""|)
+      assert_style(~s|String.length(s) === 0|, ~s|s == ""|)
+      assert_style(~s|String.length(s) != 0|, ~s|s != ""|)
+      assert_style(~s|String.length(s) > 0|, ~s|s != ""|)
+      assert_style(~s|String.length(s) <= 0|, ~s|s == ""|)
+      assert_style(~s|String.length(s) >= 1|, ~s|s != ""|)
+      assert_style(~s|String.length(s) < 1|, ~s|s == ""|)
+      assert_style(~s|0 < String.length(s)|, ~s|s != ""|)
+    end
+  end
+
+  describe "negated is_* guards" do
+    test "!is_nil(x) => not is_nil(x)" do
+      assert_style("!is_nil(x)", "not is_nil(x)")
+    end
+
+    test "covers other built-in is_* guards" do
+      assert_style("!is_atom(x)", "not is_atom(x)")
+      assert_style("!is_binary(x)", "not is_binary(x)")
+      assert_style("!is_list(x)", "not is_list(x)")
+      assert_style("!is_map(x)", "not is_map(x)")
+      assert_style("!is_struct(x, Foo)", "not is_struct(x, Foo)")
+      assert_style("!is_integer(x)", "not is_integer(x)")
+    end
+
+    test "leaves unrelated `!` calls alone" do
+      assert_style("!x")
+      assert_style("!some_predicate(x)")
+      assert_style("!Map.has_key?(map, :foo)")
+    end
   end
 
   describe "to_timeout" do

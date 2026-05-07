@@ -696,6 +696,203 @@ defmodule Styler.Style.PipesTest do
       )
     end
 
+    test "FilterReject: collapses Enum.filter |> Enum.reject into one filter with the second negated" do
+      assert_style(
+        """
+        list
+        |> Enum.filter(f1)
+        |> Enum.reject(f2)
+        """,
+        """
+        Enum.filter(list, fn item -> f1.(item) && !f2.(item) end)
+        """
+      )
+    end
+
+    test "FilterReject: leaves chains alone when the modules don't both match Enum" do
+      assert_style("""
+      list
+      |> Stream.filter(f1)
+      |> Enum.reject(f2)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.filter(f1)
+      |> Stream.reject(f2)
+      """)
+    end
+
+    test "RejectFilter: collapses Enum.reject |> Enum.filter into one filter with the first negated" do
+      assert_style(
+        """
+        list
+        |> Enum.reject(f1)
+        |> Enum.filter(f2)
+        """,
+        """
+        Enum.filter(list, fn item -> !f1.(item) && f2.(item) end)
+        """
+      )
+    end
+
+    test "RejectFilter: leaves chains alone when the modules don't both match Enum" do
+      assert_style("""
+      list
+      |> Stream.reject(f1)
+      |> Enum.filter(f2)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.reject(f1)
+      |> Stream.filter(f2)
+      """)
+    end
+
+    test "MapMap: collapses two named-capture maps into a pipe" do
+      assert_style(
+        """
+        list
+        |> Enum.map(&Mod.foo/1)
+        |> Enum.map(&Mod.bar/1)
+        """,
+        """
+        Enum.map(list, fn arg1 -> arg1 |> Mod.foo() |> Mod.bar() end)
+        """
+      )
+
+      assert_style(
+        """
+        list
+        |> Enum.map(&foo/1)
+        |> Enum.map(&bar/1)
+        """,
+        """
+        Enum.map(list, fn arg1 -> arg1 |> foo() |> bar() end)
+        """
+      )
+    end
+
+    test "MapMap: collapses &fun(&1) shorthand into a pipe" do
+      assert_style(
+        """
+        list
+        |> Enum.map(&foo(&1))
+        |> Enum.map(&Mod.bar(&1))
+        """,
+        """
+        Enum.map(list, fn arg1 -> arg1 |> foo() |> Mod.bar() end)
+        """
+      )
+    end
+
+    test "MapMap: pivots on the first arg of f1 when its placeholder isn't there" do
+      # User case from billing_core/.../process_bloomberg_import.ex. Both sides are inlineable;
+      # f1 puts the placeholder in position 2, so the merge pivots on `import_record` (f1's first
+      # arg). f1 is a capture so contributes no name; the merged lambda picks up `changeset` from
+      # f2's `fn changeset -> ...`.
+      assert_style(
+        """
+        list
+        |> Enum.map(&build_changeset(import_record, &1))
+        |> Enum.map(fn changeset -> Repo.insert(changeset, on_conflict: :nothing) end)
+        """,
+        """
+        Enum.map(list, fn changeset -> import_record |> build_changeset(changeset) |> Repo.insert(on_conflict: :nothing) end)
+        """
+      )
+    end
+
+    test "MapMap: skips when either side can't be cleanly inlined" do
+      # Variables (could be any function), multi-`&1` captures (would call f1 twice), and inline
+      # fns whose body uses the var more than once or zero times — leave those alone.
+      assert_style("""
+      list
+      |> Enum.map(f1)
+      |> Enum.map(f2)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(&foo/1)
+      |> Enum.map(&(&1 + &1))
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(fn x -> x + x end)
+      |> Enum.map(&Mod.fun/1)
+      """)
+    end
+
+    test "MapMap: regression — extends an already-piped fn body without producing a malformed single-arg pipe" do
+      # Repro from a real codebase: f1's body is itself a pipe (`element |> String.replace(...) |>
+      # ...`). The merge needs to leave that pipe alone and just extend it with f2's call. Earlier,
+      # `pipify` mis-treated the inner `:|>` as a regular call and produced `{:|>, _, [single_arg]}`,
+      # which crashed `fix_pipe_start`.
+      assert_style(
+        """
+        status
+        |> Enum.map(fn element ->
+          element |> String.replace(~r/([A-Z])/, "_\\\\1") |> String.downcase()
+        end)
+        |> Enum.map(fn element -> String.to_atom(element) end)
+        """,
+        """
+        Enum.map(status, fn element -> element |> String.replace(~r/([A-Z])/, "_\\\\1") |> String.downcase() |> String.to_atom() end)
+        """
+      )
+    end
+
+    test "MapMap: skips when the merged body wouldn't make a 2+ stage pipe" do
+      # `&(&1 + 1)` inlines to `arg + 1` which isn't a pipify-able call, so the merge would only
+      # produce a single pipe (which Styler immediately undoes). Don't bother starting.
+      assert_style("""
+      list
+      |> Enum.map(&(&1 + 1))
+      |> Enum.map(&foo/1)
+      """)
+    end
+
+    test "MapMap: skips when the iteration var name collides with a closure var in f2" do
+      # Reported by Cursor Bugbot: picking f1's param name as the merged lambda's parameter would
+      # shadow a same-named closure variable referenced in f2's body, silently changing semantics.
+      assert_style("""
+      list
+      |> Enum.map(fn config -> transform(config) end)
+      |> Enum.map(fn x -> apply_with(x, config) end)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(fn config -> transform(config) end)
+      |> Enum.map(&apply_with(&1, config))
+      """)
+
+      # Default `:arg1` iter-var case (neither side names its iter-var): a closure named `arg1` in
+      # f1 must also block the merge.
+      assert_style("""
+      list
+      |> Enum.map(&build_changeset(arg1, &1))
+      |> Enum.map(&Repo.insert/1)
+      """)
+    end
+
+    test "MapMap: leaves non-Enum.map chains alone" do
+      assert_style("""
+      list
+      |> Stream.map(f1)
+      |> Stream.map(f2)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(f1)
+      |> Enum.filter(f2)
+      """)
+    end
+
     test "filter/count" do
       for enum <- ~w(Enum Stream) do
         assert_style(
