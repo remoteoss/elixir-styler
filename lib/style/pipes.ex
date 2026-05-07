@@ -583,14 +583,23 @@ defmodule Styler.Style.Pipes do
   # RejectReject (op: `||`), and the mixed FilterReject / RejectFilter rules.
   defp combined_predicate(f1, f2, op, m, opts \\ []) do
     line = m[:line]
-    item = {:item, [line: line], nil}
+    # Prefer the source's own iteration name (like MapMap), defaulting to `:item` for filter/reject
+    # convention. If the chosen name appears as a free variable in either predicate, the merged
+    # lambda's parameter would silently shadow that closure — bail out.
+    item_name = fn_var_name(f1) || fn_var_name(f2) || :item
 
-    with call_f1 when not is_nil(call_f1) <- predicate_term(f1, item, line),
-         call_f2 when not is_nil(call_f2) <- predicate_term(f2, item, line) do
-      call_f1 = maybe_negate(call_f1, opts[:negate_f1] == true, line)
-      call_f2 = maybe_negate(call_f2, opts[:negate_f2] == true, line)
-      body = {op, [line: line], [call_f1, call_f2]}
-      {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
+    if shadows_free_var?(item_name, f1, f2) do
+      nil
+    else
+      item = {item_name, [line: line], nil}
+
+      with call_f1 when not is_nil(call_f1) <- predicate_term(f1, item, line),
+           call_f2 when not is_nil(call_f2) <- predicate_term(f2, item, line) do
+        call_f1 = maybe_negate(call_f1, opts[:negate_f1] == true, line)
+        call_f2 = maybe_negate(call_f2, opts[:negate_f2] == true, line)
+        body = {op, [line: line], [call_f1, call_f2]}
+        {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
+      end
     end
   end
 
@@ -697,6 +706,9 @@ defmodule Styler.Style.Pipes do
     do: param != name and var_in_ast?(body, name)
 
   defp free_var_in?(name, {:&, _, [body]}), do: var_in_ast?(body, name)
+  # bare reference predicate (e.g., `Enum.filter(list, f1)`) — if the chosen lambda param name
+  # matches the reference, we'd shadow it
+  defp free_var_in?(name, {var, _, ctx}) when is_atom(var) and is_atom(ctx), do: var == name
   defp free_var_in?(_, _), do: false
 
   defp var_in_ast?(ast, name) do

@@ -664,7 +664,7 @@ defmodule Styler.Style.PipesTest do
         |> Enum.filter(fn s -> String.contains?(s, "a") end)
         """,
         """
-        Enum.filter(list, fn item -> String.contains?(item, "x") && String.contains?(item, "a") end)
+        Enum.filter(list, fn s -> String.contains?(s, "x") && String.contains?(s, "a") end)
         """
       )
     end
@@ -680,6 +680,22 @@ defmodule Styler.Style.PipesTest do
         Enum.filter(list, fn item -> not is_nil(item) && is_map(item) end)
         """
       )
+    end
+
+    test "FilterFilter: skips rewrite when chosen var name would shadow a closure" do
+      # `item` is closed over by f1; merging with hardcoded `:item` would silently shadow it.
+      assert_style("""
+      list
+      |> Enum.filter(&(&1.thing == item))
+      |> Enum.filter(f2)
+      """)
+
+      # Bare-reference predicate named `:item` — same trap.
+      assert_style("""
+      list
+      |> Enum.filter(item)
+      |> Enum.filter(f2)
+      """)
     end
 
     test "FilterFilter / RejectFilter: skips rewrite when a predicate has a multi-statement fn body" do
