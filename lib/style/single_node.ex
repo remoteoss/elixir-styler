@@ -24,11 +24,20 @@ defmodule Styler.Style.SingleNode do
   * Credo.Check.Refactor.RedundantWithClauseResult
   * Credo.Check.Refactor.WithClauses
   * Credo.Check.Warning.ExpensiveEmptyEnumCheck
+
+  Also rewrites `!is_nil(x)` (and the other `is_*` guard predicates) to `not is_nil(x)`,
+  matching our existing preference for `not` over `!` on guard-style predicates.
   """
 
   @behaviour Styler.Style
 
   @closing_delimiters [~s|"|, ")", "}", "|", "]", "'", ">", "/"]
+
+  @is_guards ~w(
+    is_atom is_binary is_bitstring is_boolean is_exception is_float is_function
+    is_integer is_list is_map is_map_key is_nil is_number is_pid is_port
+    is_reference is_struct is_tuple
+  )a
 
   # `|> Timex.now()` => `|> Timex.now()`
   # skip over pipes into `Timex.now/1` so that we don't accidentally rewrite it as DateTime.utc_now/1
@@ -36,6 +45,10 @@ defmodule Styler.Style.SingleNode do
     do: {:skip, zipper, ctx}
 
   def run({node, meta}, ctx), do: {:cont, {style(node), meta}, ctx}
+
+  # `!is_nil(x)` => `not is_nil(x)` (and same for the other built-in `is_*` guard predicates).
+  # Style preference: `not` reads more naturally with type guards.
+  defp style({:!, m, [{guard, _, _} = check]}) when guard in @is_guards, do: {:not, m, [check]}
 
   defp style({:assert, meta, [{:!=, _, [x, {:__block__, _, [nil]}]}]}), do: style({:assert, meta, [x]})
   # refute nilly -> assert
@@ -207,7 +220,9 @@ defmodule Styler.Style.SingleNode do
 
   # `length(x) <op> 0|1` => `x == []` or `x != []`. Avoids walking the whole list to check emptiness.
   # `Enum.count(x) <op> 0|1` => `Enum.empty?(x)` or `not Enum.empty?(x)` (same reason).
-  # (Credo.Check.Warning.ExpensiveEmptyEnumCheck)
+  # `String.length(x) <op> 0|1` => `x == ""` or `x != ""`. Avoids walking the whole string.
+  # `byte_size(x) <op> 0|1` => `x == ""` or `x != ""`. More idiomatic.
+  # (Credo.Check.Warning.ExpensiveEmptyEnumCheck, plus the String/binary equivalents)
   defp style({op, m, [lhs, rhs]} = ast) when op in [:==, :!=, :===, :!==, :>, :<, :>=, :<=] do
     rewrite_empty_check(op, lhs, rhs, m) || ast
   end
@@ -359,6 +374,8 @@ defmodule Styler.Style.SingleNode do
 
   defp size_call({:length, _, [x]}), do: {:length, x}
   defp size_call({{:., _, [{:__aliases__, _, [:Enum]}, :count]}, _, [x]}), do: {:enum_count, x}
+  defp size_call({{:., _, [{:__aliases__, _, [:String]}, :length]}, _, [x]}), do: {:string_length, x}
+  defp size_call({:byte_size, _, [x]}), do: {:byte_size, x}
   defp size_call(_), do: nil
 
   defp int_literal({:__block__, _, [n]}) when n in [0, 1], do: n
@@ -395,6 +412,14 @@ defmodule Styler.Style.SingleNode do
     case empty_class(op, n) do
       :empty -> empty_call
       :not_empty -> {:not, m, [empty_call]}
+      nil -> nil
+    end
+  end
+
+  defp emit_empty_check(op, {kind, x}, n, m) when kind in [:string_length, :byte_size] do
+    case empty_class(op, n) do
+      :empty -> {:==, m, [x, {:__block__, [line: m[:line]], [""]}]}
+      :not_empty -> {:!=, m, [x, {:__block__, [line: m[:line]], [""]}]}
       nil -> nil
     end
   end
