@@ -436,7 +436,7 @@ defmodule Styler.Style.Pipes do
          ) = node
        ) do
     with true <- inlineable?(f1) and inlineable?(f2) and placeholder_in_first_position?(f2),
-         item_name = iteration_var_name(f1),
+         item_name = iteration_var_name(f1, f2),
          false <- shadows_free_var?(item_name, f1, f2),
          item = {item_name, [line: fm[:line]], nil},
          inlined_f1 = inline_capture(f1, item, fm[:line]),
@@ -629,11 +629,13 @@ defmodule Styler.Style.Pipes do
   defp inlineable?(_), do: false
 
   # If either side is an inline `fn x -> ...`, prefer that var name for the merged lambda - the source already named the
-  # iteration value. Otherwise, fall back to `arg1`.
-  defp iteration_var_name({:fn, _, [{:->, _, [[{name, _, ctx}], _]}]}) when is_atom(name) and is_atom(ctx) and name != :_,
+  # iteration value. Prefer f1's name when both are named. Otherwise, fall back to `arg1`.
+  defp iteration_var_name(f1, f2), do: fn_var_name(f1) || fn_var_name(f2) || :arg1
+
+  defp fn_var_name({:fn, _, [{:->, _, [[{name, _, ctx}], _]}]}) when is_atom(name) and is_atom(ctx) and name != :_,
     do: name
 
-  defp iteration_var_name(_), do: :arg1
+  defp fn_var_name(_), do: nil
 
   # The merged lambda introduces a fresh binding for `name`. If that same name appears as a free variable in either
   # side's body, it referred to a closure binding in the source - after merging, the new lambda's parameter would shadow

@@ -790,7 +790,8 @@ defmodule Styler.Style.PipesTest do
     test "MapMap: pivots on the first arg of f1 when its placeholder isn't there" do
       # User case from billing_core/.../process_bloomberg_import.ex. Both sides are inlineable;
       # f1 puts the placeholder in position 2, so the merge pivots on `import_record` (f1's first
-      # arg) and the iter-var defaults to `arg1` since neither side is an inline `fn x -> ...`.
+      # arg). f1 is a capture so contributes no name; the merged lambda picks up `changeset` from
+      # f2's `fn changeset -> ...`.
       assert_style(
         """
         list
@@ -798,7 +799,7 @@ defmodule Styler.Style.PipesTest do
         |> Enum.map(fn changeset -> Repo.insert(changeset, on_conflict: :nothing) end)
         """,
         """
-        Enum.map(list, fn arg1 -> import_record |> build_changeset(arg1) |> Repo.insert(on_conflict: :nothing) end)
+        Enum.map(list, fn changeset -> import_record |> build_changeset(changeset) |> Repo.insert(on_conflict: :nothing) end)
         """
       )
     end
@@ -869,11 +870,12 @@ defmodule Styler.Style.PipesTest do
       |> Enum.map(&apply_with(&1, config))
       """)
 
-      # Default `:arg1` iter-var case: a closure named `arg1` in f1 must also block the merge.
+      # Default `:arg1` iter-var case (neither side names its iter-var): a closure named `arg1` in
+      # f1 must also block the merge.
       assert_style("""
       list
       |> Enum.map(&build_changeset(arg1, &1))
-      |> Enum.map(fn cs -> Repo.insert(cs) end)
+      |> Enum.map(&Repo.insert/1)
       """)
     end
 
