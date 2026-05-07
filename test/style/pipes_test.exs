@@ -854,6 +854,29 @@ defmodule Styler.Style.PipesTest do
       """)
     end
 
+    test "MapMap: skips when the iteration var name collides with a closure var in f2" do
+      # Reported by Cursor Bugbot: picking f1's param name as the merged lambda's parameter would
+      # shadow a same-named closure variable referenced in f2's body, silently changing semantics.
+      assert_style("""
+      list
+      |> Enum.map(fn config -> transform(config) end)
+      |> Enum.map(fn x -> apply_with(x, config) end)
+      """)
+
+      assert_style("""
+      list
+      |> Enum.map(fn config -> transform(config) end)
+      |> Enum.map(&apply_with(&1, config))
+      """)
+
+      # Default `:arg1` iter-var case: a closure named `arg1` in f1 must also block the merge.
+      assert_style("""
+      list
+      |> Enum.map(&build_changeset(arg1, &1))
+      |> Enum.map(fn cs -> Repo.insert(cs) end)
+      """)
+    end
+
     test "MapMap: leaves non-Enum.map chains alone" do
       assert_style("""
       list

@@ -422,12 +422,11 @@ defmodule Styler.Style.Pipes do
        ),
        do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm, negate_f1: true)]}]}
 
-  # `lhs |> Enum.map(f1) |> Enum.map(f2)` => single `Enum.map` whose body is the inlined nested call.
-  # We seed the body with a one-step pipe inside f1's slot — Styler's existing `f(pipe, args)` walk
-  # then unfolds the f2 call into the rest of the pipe chain. If either side can't be cleanly inlined,
-  # f1 doesn't pipify (e.g. it inlined to an operator), or f2 doesn't put its placeholder in position
-  # 1 (so the seed pipe wouldn't unfold), skip — leaving the original two-map chain.
-  # (Credo.Check.Refactor.MapMap)
+  # `lhs |> Enum.map(f1) |> Enum.map(f2)` => single `Enum.map` whose body is the inlined nested call. We seed the body
+  # with a one-step pipe inside f1's slot - Styler's existing `f(pipe, args)` walk then unfolds the f2 call into the
+  # rest of the pipe chain. If either side can't be cleanly inlined, f1 doesn't pipify (e.g. it inlined to an operator),
+  # or f2 doesn't put its placeholder in position 1 (so the seed pipe wouldn't unfold), skip — leaving the original
+  # two-map chain. (Credo.Check.Refactor.MapMap)
   defp fix_pipe(
          pipe_chain(
            pm,
@@ -438,6 +437,7 @@ defmodule Styler.Style.Pipes do
        ) do
     with true <- inlineable?(f1) and inlineable?(f2) and placeholder_in_first_position?(f2),
          item_name = iteration_var_name(f1),
+         false <- shadows_free_var?(item_name, f1, f2),
          item = {item_name, [line: fm[:line]], nil},
          inlined_f1 = inline_capture(f1, item, fm[:line]),
          {:|>, _, _} = f1_seed <- pipify(inlined_f1) do
@@ -628,12 +628,36 @@ defmodule Styler.Style.Pipes do
 
   defp inlineable?(_), do: false
 
-  # If either side is an inline `fn x -> ...`, prefer that var name for the merged lambda — the
-  # source already named the iteration value. Otherwise, fall back to `arg1`.
+  # If either side is an inline `fn x -> ...`, prefer that var name for the merged lambda - the source already named the
+  # iteration value. Otherwise, fall back to `arg1`.
   defp iteration_var_name({:fn, _, [{:->, _, [[{name, _, ctx}], _]}]}) when is_atom(name) and is_atom(ctx) and name != :_,
     do: name
 
   defp iteration_var_name(_), do: :arg1
+
+  # The merged lambda introduces a fresh binding for `name`. If that same name appears as a free variable in either
+  # side's body, it referred to a closure binding in the source - after merging, the new lambda's parameter would shadow
+  # it, silently changing semantics. Conservatively report any reference to `name` outside the side's own parameter as a
+  # shadow risk; refs inside a nested `fn`/`&` are technically rebindable but `inlineable?` already rejects most such
+  # cases.
+  defp shadows_free_var?(name, f1, f2), do: free_var_in?(name, f1) or free_var_in?(name, f2)
+
+  defp free_var_in?(name, {:fn, _, [{:->, _, [[{param, _, ctx}], body]}]}) when is_atom(param) and is_atom(ctx),
+    do: param != name and var_in_ast?(body, name)
+
+  defp free_var_in?(name, {:&, _, [body]}), do: var_in_ast?(body, name)
+  defp free_var_in?(_, _), do: false
+
+  defp var_in_ast?(ast, name) do
+    {_, found} =
+      Macro.prewalk(ast, false, fn
+        node, true -> {node, true}
+        {var, _, ctx} = node, false when var == name and is_atom(ctx) -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
 
   # The seed-pipe trick only unfolds when f2's placeholder lands in arg position 1 of an outer call.
   # If it lands in position 2+, we'd produce something like `Mod.fun(other, pipe)`, which Styler's
