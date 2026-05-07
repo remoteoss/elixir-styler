@@ -424,13 +424,6 @@ defmodule Styler.Style.SingleNodeTest do
       assert_style(~s|String.length(s) < 1|, ~s|s == ""|)
       assert_style(~s|0 < String.length(s)|, ~s|s != ""|)
     end
-
-    test "rewrites `byte_size(x) <op> 0|1` to comparisons against `\"\"`" do
-      assert_style(~s|byte_size(s) == 0|, ~s|s == ""|)
-      assert_style(~s|byte_size(s) != 0|, ~s|s != ""|)
-      assert_style(~s|byte_size(s) > 0|, ~s|s != ""|)
-      assert_style(~s|0 == byte_size(s)|, ~s|s == ""|)
-    end
   end
 
   describe "negated is_* guards" do

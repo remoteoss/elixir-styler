@@ -221,8 +221,7 @@ defmodule Styler.Style.SingleNode do
   # `length(x) <op> 0|1` => `x == []` or `x != []`. Avoids walking the whole list to check emptiness.
   # `Enum.count(x) <op> 0|1` => `Enum.empty?(x)` or `not Enum.empty?(x)` (same reason).
   # `String.length(x) <op> 0|1` => `x == ""` or `x != ""`. Avoids walking the whole string.
-  # `byte_size(x) <op> 0|1` => `x == ""` or `x != ""`. More idiomatic.
-  # (Credo.Check.Warning.ExpensiveEmptyEnumCheck, plus the String/binary equivalents)
+  # (Credo.Check.Warning.ExpensiveEmptyEnumCheck, plus the String equivalent)
   defp style({op, m, [lhs, rhs]} = ast) when op in [:==, :!=, :===, :!==, :>, :<, :>=, :<=] do
     rewrite_empty_check(op, lhs, rhs, m) || ast
   end
@@ -375,7 +374,6 @@ defmodule Styler.Style.SingleNode do
   defp size_call({:length, _, [x]}), do: {:length, x}
   defp size_call({{:., _, [{:__aliases__, _, [:Enum]}, :count]}, _, [x]}), do: {:enum_count, x}
   defp size_call({{:., _, [{:__aliases__, _, [:String]}, :length]}, _, [x]}), do: {:string_length, x}
-  defp size_call({:byte_size, _, [x]}), do: {:byte_size, x}
   defp size_call(_), do: nil
 
   defp int_literal({:__block__, _, [n]}) when n in [0, 1], do: n
@@ -416,7 +414,7 @@ defmodule Styler.Style.SingleNode do
     end
   end
 
-  defp emit_empty_check(op, {kind, x}, n, m) when kind in [:string_length, :byte_size] do
+  defp emit_empty_check(op, {:string_length, x}, n, m) do
     case empty_class(op, n) do
       :empty -> {:==, m, [x, {:__block__, [line: m[:line]], [""]}]}
       :not_empty -> {:!=, m, [x, {:__block__, [line: m[:line]], [""]}]}
