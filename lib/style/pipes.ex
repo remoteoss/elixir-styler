@@ -372,7 +372,7 @@ defmodule Styler.Style.Pipes do
        when mod in @enum,
        do: {:|>, pm, [lhs, {count, meta, [filterer]}]}
 
-  # `lhs |> Enum.filter(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> f1.(item) && f2.(item) end)`
+  # `lhs |> Enum.filter(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> f1_inlined && f2_inlined end)`
   # (Credo.Check.Refactor.FilterFilter)
   defp fix_pipe(
          pipe_chain(
@@ -380,11 +380,15 @@ defmodule Styler.Style.Pipes do
            lhs,
            {{:., _, [{_, _, [:Enum]}, :filter]} = filter, fm, [f1]},
            {{:., _, [{_, _, [:Enum]}, :filter]}, _, [f2]}
-         )
-       ),
-       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm)]}]}
+         ) = node
+       ) do
+    case combined_predicate(f1, f2, :&&, fm) do
+      nil -> node
+      combined -> {:|>, pm, [lhs, {filter, fm, [combined]}]}
+    end
+  end
 
-  # `lhs |> Enum.reject(f1) |> Enum.reject(f2)` => `lhs |> Enum.reject(fn item -> f1.(item) || f2.(item) end)`
+  # `lhs |> Enum.reject(f1) |> Enum.reject(f2)` => `lhs |> Enum.reject(fn item -> f1_inlined || f2_inlined end)`
   # (Credo.Check.Refactor.RejectReject)
   defp fix_pipe(
          pipe_chain(
@@ -392,11 +396,15 @@ defmodule Styler.Style.Pipes do
            lhs,
            {{:., _, [{_, _, [:Enum]}, :reject]} = reject, fm, [f1]},
            {{:., _, [{_, _, [:Enum]}, :reject]}, _, [f2]}
-         )
-       ),
-       do: {:|>, pm, [lhs, {reject, fm, [combined_predicate(f1, f2, :||, fm)]}]}
+         ) = node
+       ) do
+    case combined_predicate(f1, f2, :||, fm) do
+      nil -> node
+      combined -> {:|>, pm, [lhs, {reject, fm, [combined]}]}
+    end
+  end
 
-  # `lhs |> Enum.filter(f1) |> Enum.reject(f2)` => `lhs |> Enum.filter(fn item -> f1.(item) && !f2.(item) end)`
+  # `lhs |> Enum.filter(f1) |> Enum.reject(f2)` => `lhs |> Enum.filter(fn item -> f1_inlined && !f2_inlined end)`
   # (Credo.Check.Refactor.FilterReject)
   defp fix_pipe(
          pipe_chain(
@@ -404,11 +412,15 @@ defmodule Styler.Style.Pipes do
            lhs,
            {{:., _, [{_, _, [:Enum]}, :filter]} = filter, fm, [f1]},
            {{:., _, [{_, _, [:Enum]}, :reject]}, _, [f2]}
-         )
-       ),
-       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm, negate_f2: true)]}]}
+         ) = node
+       ) do
+    case combined_predicate(f1, f2, :&&, fm, negate_f2: true) do
+      nil -> node
+      combined -> {:|>, pm, [lhs, {filter, fm, [combined]}]}
+    end
+  end
 
-  # `lhs |> Enum.reject(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> !f1.(item) && f2.(item) end)`
+  # `lhs |> Enum.reject(f1) |> Enum.filter(f2)` => `lhs |> Enum.filter(fn item -> !f1_inlined && f2_inlined end)`
   # The merged call collapses to `Enum.filter` (as Credo recommends) — `f1` was the original reject,
   # so we negate it; `f2` was the original filter, so it stays.
   # (Credo.Check.Refactor.RejectFilter)
@@ -418,9 +430,13 @@ defmodule Styler.Style.Pipes do
            lhs,
            {{:., _, [{_, _, [:Enum]}, :reject]}, fm, [f1]},
            {{:., _, [{_, _, [:Enum]}, :filter]} = filter, _, [f2]}
-         )
-       ),
-       do: {:|>, pm, [lhs, {filter, fm, [combined_predicate(f1, f2, :&&, fm, negate_f1: true)]}]}
+         ) = node
+       ) do
+    case combined_predicate(f1, f2, :&&, fm, negate_f1: true) do
+      nil -> node
+      combined -> {:|>, pm, [lhs, {filter, fm, [combined]}]}
+    end
+  end
 
   # `lhs |> Enum.map(f1) |> Enum.map(f2)` => single `Enum.map` whose body is the inlined nested call. We seed the body
   # with a one-step pipe inside f1's slot - Styler's existing `f(pipe, args)` walk then unfolds the f2 call into the
@@ -558,18 +574,60 @@ defmodule Styler.Style.Pipes do
   defp valid_pipe_start?({fun, _, _args}) when is_atom(fun), do: String.match?("#{fun}", ~r/^sigil_[a-zA-Z]$/)
   defp valid_pipe_start?(_), do: true
 
-  # Combines two 1-arity predicates into a single anonymous function: `fn item -> f1.(item) <op> f2.(item) end`.
-  # Universal form that's correct regardless of whether each predicate is a capture, an `&(...)` shortform,
-  # or an explicit `fn x -> ... end`. Used by FilterFilter (op: `&&`), RejectReject (op: `||`), and
-  # the mixed FilterReject / RejectFilter rules (op: `&&` with one side wrapped in `!`).
+  # Combines two 1-arity predicates into a single anonymous function: `fn item -> f1_term <op> f2_term end`.
+  # Returns nil if either side can't be combined cleanly — the caller skips the rewrite. We inline
+  # captures and inline-fn predicates whose body is a single expression (so combining with `&&`/`||`
+  # is sound). Bare references (like `f1`) fall back to `f1.(item)`. Anything else (multi-statement
+  # `fn` bodies, captures with multiple `&1` uses, nested closures) is left alone — the original
+  # two-pipe form is more readable than what we'd produce. Used by FilterFilter (op: `&&`),
+  # RejectReject (op: `||`), and the mixed FilterReject / RejectFilter rules.
   defp combined_predicate(f1, f2, op, m, opts \\ []) do
     line = m[:line]
-    item = {:item, [line: line], nil}
-    call_f1 = maybe_negate(predicate_call(f1, item, line), opts[:negate_f1] == true, line)
-    call_f2 = maybe_negate(predicate_call(f2, item, line), opts[:negate_f2] == true, line)
-    body = {op, [line: line], [call_f1, call_f2]}
-    {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
+    # Prefer the source's own iteration name (like MapMap), defaulting to `:item` for filter/reject
+    # convention. If the chosen name appears as a free variable in either predicate, the merged
+    # lambda's parameter would silently shadow that closure — bail out.
+    item_name = fn_var_name(f1) || fn_var_name(f2) || :item
+
+    if shadows_free_var?(item_name, f1, f2) do
+      nil
+    else
+      item = {item_name, [line: line], nil}
+
+      with call_f1 when not is_nil(call_f1) <- predicate_term(f1, item, line),
+           call_f2 when not is_nil(call_f2) <- predicate_term(f2, item, line) do
+        call_f1 = maybe_negate(call_f1, opts[:negate_f1] == true, line)
+        call_f2 = maybe_negate(call_f2, opts[:negate_f2] == true, line)
+        body = {op, [line: line], [call_f1, call_f2]}
+        {:fn, [closing: [line: line], line: line], [{:->, [line: line], [[item], body]}]}
+      end
+    end
   end
+
+  defp predicate_term(fun, item, line) do
+    cond do
+      inlineable_simple?(fun) -> Style.set_line(inline_capture(fun, item, line), line)
+      bare_reference?(fun) -> predicate_call(fun, item, line)
+      true -> nil
+    end
+  end
+
+  # Inlineable AND the body is a single expression. Multi-statement `fn`/`&` bodies don't compose
+  # cleanly under `&&`/`||` — short-circuit semantics would change and the formatted output is uglier
+  # than the original two-pipe chain.
+  defp inlineable_simple?({:&, _, [{:/, _, _}]} = fun), do: inlineable?(fun)
+
+  defp inlineable_simple?({:&, _, [body]} = fun), do: inlineable?(fun) and not multi_statement_block?(body)
+
+  defp inlineable_simple?({:fn, _, [{:->, _, [_, body]}]} = fun),
+    do: inlineable?(fun) and not multi_statement_block?(body)
+
+  defp inlineable_simple?(_), do: false
+
+  defp multi_statement_block?({:__block__, _, [_, _ | _]}), do: true
+  defp multi_statement_block?(_), do: false
+
+  defp bare_reference?({var, _, ctx}) when is_atom(var) and is_atom(ctx), do: true
+  defp bare_reference?(_), do: false
 
   defp maybe_negate(call, true, line), do: {:!, [line: line], [call]}
   defp maybe_negate(call, false, _line), do: call
@@ -648,6 +706,9 @@ defmodule Styler.Style.Pipes do
     do: param != name and var_in_ast?(body, name)
 
   defp free_var_in?(name, {:&, _, [body]}), do: var_in_ast?(body, name)
+  # bare reference predicate (e.g., `Enum.filter(list, f1)`) — if the chosen lambda param name
+  # matches the reference, we'd shadow it
+  defp free_var_in?(name, {var, _, ctx}) when is_atom(var) and is_atom(ctx), do: var == name
   defp free_var_in?(_, _), do: false
 
   defp var_in_ast?(ast, name) do
